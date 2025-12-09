@@ -8,7 +8,7 @@ import sys
 import tempfile
 from typing import Any, Dict, Optional
 
-from sciagent.tool.base import BaseTool, ToolReturnType, ExposedToolSpec, check
+from sciagent.tool.base import BaseTool, ToolReturnType, check, tool
 
 
 class PythonCodingTool(BaseTool):
@@ -46,14 +46,7 @@ class PythonCodingTool(BaseTool):
 
         super().__init__(require_approval=require_approval, **kwargs)
 
-        self.exposed_tools = [
-            ExposedToolSpec(
-                name="execute_python_code",
-                function=self.execute_code,
-                return_type=ToolReturnType.DICT,
-            )
-        ]
-
+    @tool(name="execute_python_code", return_type=ToolReturnType.DICT)
     def execute_code(
         self,
         code: str,
@@ -161,14 +154,7 @@ class BashCodingTool(BaseTool):
 
         super().__init__(require_approval=require_approval, **kwargs)
 
-        self.exposed_tools = [
-            ExposedToolSpec(
-                name="execute_bash_code",
-                function=self.execute_code,
-                return_type=ToolReturnType.DICT,
-            )
-        ]
-
+    @tool(name="execute_bash_code", return_type=ToolReturnType.DICT)
     def execute_code(
         self,
         code: str,

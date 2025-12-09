@@ -1,5 +1,6 @@
 
 import argparse
+import inspect
 import logging
 import os
 from typing import Callable
@@ -8,7 +9,7 @@ import pytest
 import numpy as np
 
 from sciagent.message_proc import print_message
-from sciagent.tool.base import BaseTool, ToolReturnType, ExposedToolSpec, check
+from sciagent.tool.base import BaseTool, ToolReturnType, check, tool
 try:
     from sciagent.agent.asksage import AskSageAgent
 except ImportError:
@@ -25,13 +26,13 @@ def build_function_tool(name: str, func: Callable, return_type: ToolReturnType) 
         @check
         def __init__(self):
             super().__init__()
-            self.exposed_tools = [
-                ExposedToolSpec(
-                    name=name,
-                    function=func,
-                    return_type=return_type,
-                )
-            ]
+
+        @tool(name=name, return_type=return_type)
+        def _tool(self, *args, **kwargs):
+            return func(*args, **kwargs)
+
+    setattr(_FunctionTool._tool, "__signature__", inspect.signature(func))
+    _FunctionTool._tool.__annotations__ = getattr(func, "__annotations__", {}).copy()
 
     _FunctionTool.name = f"{name}_wrapper"
     return _FunctionTool()

@@ -8,7 +8,7 @@ import pytest
 sys.modules.setdefault("fastmcp", Mock())
 
 from sciagent.task_manager.base import BaseTaskManager
-from sciagent.tool.base import BaseTool, ToolReturnType, ExposedToolSpec, check
+from sciagent.tool.base import BaseTool, ToolReturnType, check, tool
 from sciagent.tool.mcp import MCPTool
 
 import test_utils as tutils
@@ -21,14 +21,8 @@ class DummyFunctionTool(BaseTool):
     @check
     def __init__(self):
         super().__init__(require_approval=True)
-        self.exposed_tools = [
-            ExposedToolSpec(
-                name="function_tool",
-                function=self.run,
-                return_type=ToolReturnType.TEXT,
-            )
-        ]
 
+    @tool(name="function_tool", return_type=ToolReturnType.TEXT)
     def run(self) -> str:
         return "function"
 
@@ -41,13 +35,6 @@ class DummyMCPTool(MCPTool):
         self._connected = False
         self._client = None
         self.calls = []
-        self.exposed_tools = [
-            ExposedToolSpec(
-                name="mcp_placeholder",
-                function=lambda: None,
-                return_type=ToolReturnType.TEXT,
-            )
-        ]
         self._schemas = [
             {
                 "type": "function",

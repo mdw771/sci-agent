@@ -6,6 +6,7 @@ import os
 import io
 from enum import StrEnum, auto
 import inspect
+from types import FunctionType, MethodType
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -42,6 +43,20 @@ class ExposedToolSpec:
     """
 
 
+def tool(name: str, return_type: ToolReturnType):
+    """Decorator used to mark BaseTool methods as callable tools."""
+
+    def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+        if not callable(func):
+            raise TypeError("@tool can only decorate callables.")
+        setattr(func, "is_tool", True)
+        setattr(func, "tool_name", name)
+        setattr(func, "tool_return_type", return_type)
+        return func
+
+    return decorator
+
+
 class BaseTool:
     
     name: str = "base_tool"
@@ -57,7 +72,7 @@ class BaseTool:
         if build:
             self.build(*args, **kwargs)
         
-        self.exposed_tools: List[ExposedToolSpec] = []
+        self.exposed_tools: List[ExposedToolSpec] = self._discover_tools()
 
     def build(self, *args, **kwargs):
         pass
@@ -135,6 +150,46 @@ class BaseTool:
             "role": "user"
         }
         return image_message
+    
+    def _discover_tools(self) -> List[ExposedToolSpec]:
+        """Collect methods decorated with @tool and build ExposedToolSpec entries."""
+        discovered: List[ExposedToolSpec] = []
+        seen: set[str] = set()
+
+        for cls in self.__class__.mro():
+            if cls is object:
+                continue
+            for attr_name, attr_value in cls.__dict__.items():
+                if attr_name in seen:
+                    continue
+                target = self._unwrap_descriptor(attr_value)
+                if target is None or not getattr(target, "is_tool", False):
+                    continue
+                seen.add(attr_name)
+                bound_callable = getattr(self, attr_name)
+                tool_name = getattr(target, "tool_name", attr_name)
+                return_type = getattr(target, "tool_return_type", None)
+                discovered.append(
+                    ExposedToolSpec(
+                        name=tool_name,
+                        function=bound_callable,
+                        return_type=return_type,
+                    )
+                )
+        return discovered
+
+    @staticmethod
+    def _unwrap_descriptor(attribute: Any) -> Optional[Callable[..., Any]]:
+        """Return the underlying function for attributes that support tool metadata."""
+        if isinstance(attribute, staticmethod):
+            return attribute.__func__
+        if isinstance(attribute, classmethod):
+            return attribute.__func__
+        if isinstance(attribute, (FunctionType, MethodType)):
+            return attribute
+        if callable(attribute):
+            return attribute
+        return None
     
 
 def check(init_method: Callable):

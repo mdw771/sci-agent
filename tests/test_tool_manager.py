@@ -8,7 +8,7 @@ import pytest
 sys.modules.setdefault("fastmcp", Mock())
 
 from sciagent.agent.base import ToolManager
-from sciagent.tool.base import BaseTool, ToolReturnType, ExposedToolSpec, check
+from sciagent.tool.base import BaseTool, ToolReturnType, check, tool
 from sciagent.tool.mcp import MCPTool
 
 import test_utils as tutils
@@ -21,14 +21,8 @@ class DummyFunctionTool(BaseTool):
     @check
     def __init__(self):
         super().__init__(require_approval=True)
-        self.exposed_tools = [
-            ExposedToolSpec(
-                name="dummy_tool",
-                function=self.dummy_tool,
-                return_type=ToolReturnType.TEXT,
-            )
-        ]
 
+    @tool(name="dummy_tool", return_type=ToolReturnType.TEXT)
     def dummy_tool(self) -> str:
         return "ok"
 
