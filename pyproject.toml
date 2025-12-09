@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=64", "setuptools_scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sci-agent"
+description = "Agentic AI framework designed for scientific and control applications."
+readme = "README.md"
+requires-python = ">=3.11"
+license = {file = "LICENSE.txt"}
+dependencies = [
+    "matplotlib",
+    "numpy",
+    "scikit-image",
+    "openai",
+    "tqdm",
+    "fastmcp>=2.11.3",
+    "fastapi",
+    "uvicorn[standard]",
+    "chromadb",
+]
+dynamic = ["version"]
+
+[project.optional-dependencies]
+asksage = [
+    "asksageclient==1.31"
+]
+postgresql_vector_store = [
+    "psycopg[binary]>=3.2.10"
+]
+docs = [
+    "sphinx", 
+    "sphinx-rtd-theme"
+]
+dev = [
+    "pytest"
+]
+
+[tool.setuptools_scm]
+
+[tool.setuptools.packages.find]
+where = ["src"]
