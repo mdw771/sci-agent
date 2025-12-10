@@ -1,101 +1,42 @@
-# This workflow will install Python dependencies, run tests and lint with a single version of Python
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-python
-
-name: Python application
+name: CI
 
 on:
   push:
     branches: [ "main", "ci" ]
   pull_request:
     branches: [ "main" ]
-  workflow_dispatch:
-
-env:
-  SCIAGENT_CI_DATA_DIR: /local/sciagent_ci_data/
 
 permissions:
   contents: read
 
 jobs:
-  lint:
-    defaults:
-      run:
-        shell: bash -l {0}
-
-    runs-on: self-hosted
+  lint-and-test:
+    runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Create environment
-        id: create_env
-        run: |
-          uv venv --python 3.11 .venv_lint
-          source .venv_lint/bin/activate
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
 
-      - name: Install Ruff
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Create virtual environment from uv.lock
         run: |
-          source .venv_lint/bin/activate
-          uv pip install ruff
+          uv venv .venv
+          source .venv/bin/activate
+          uv sync  # installs deps exactly specified in uv.lock
 
       - name: Run Ruff
         run: |
-          source .venv_lint/bin/activate
-          ruff check src/ --output-format=github
+          source .venv/bin/activate
+          uv run ruff check .
 
-      - name: Remove environment
-        if: always()
+      - name: Run Pytest
         run: |
-          source .venv_lint/bin/deactivate
-          rm -rf .venv_lint
-
-  linux-x86-gpu:
-
-    defaults:
-      run:
-        shell: bash -l {0}
-
-    runs-on: self-hosted
-
-    steps:
-      - uses: actions/checkout@v3
-
-      - name: Update test data
-        id: update_test_data
-        run: |
-          PACKAGE_DIR=$(pwd)
-          cd $SCIAGENT_CI_DATA_DIR
-          git pull origin main
-          cd $PACKAGE_DIR
-
-      - name: Create environment
-        id: create_env
-        run: |
-          uv venv --python 3.11 .venv_pytest
-          source .venv_pytest/bin/activate
-        
-      - name: Install dependencies
-        run: |
-          source .venv_pytest/bin/activate
-          uv pip install --upgrade pip
-          uv pip install pytest
-          uv pip install -r requirements.txt
-          uv pip install -e .
-
-      - name: List build environment
-        run: |
-          source .venv_pytest/bin/activate
-          uv pip list
-
-      - name: Test with pytest
-        run: |
-          source .venv_pytest/bin/activate
-          echo $(which python)
-          cd tests
-          pytest -s --high-tol
-
-      - name: Remove environment
-        if: always()
-        run: |
-          source .venv_pytest/bin/deactivate
-          rm -rf .venv_pytest
+          source .venv/bin/activate
+          uv run pytest tests/
