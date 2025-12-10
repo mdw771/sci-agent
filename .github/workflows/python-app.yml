@@ -30,11 +30,11 @@ jobs:
           uv venv .venv
           source .venv/bin/activate
           uv sync  # installs deps exactly specified in uv.lock
+          uv pip install ruff pytest
 
       - name: Run Ruff
         run: |
           source .venv/bin/activate
-          uv pip install ruff
           ruff check src/
 
       - name: Run Pytest
