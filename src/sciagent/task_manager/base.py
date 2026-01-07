@@ -182,6 +182,20 @@ class BaseTaskManager:
     def prerun_check(self, *args, **kwargs) -> bool:
         return True
     
+    def record_system_message(self, content: str, image_path: Optional[str] = None):
+        """Add a system message to the message history.
+        """
+        message = generate_openai_message(
+            content=content,
+            role="system",
+            image_path=image_path
+        )
+        self.update_message_history(
+            message,
+            update_context=False,
+            update_full_history=True,
+        )
+    
     def update_message_history(
         self,
         message: Dict[str, Any],
