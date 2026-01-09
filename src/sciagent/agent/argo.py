@@ -124,10 +124,15 @@ class ArgoAgent(OpenAIAgent):
         return response_dict
 
     def argo_response_to_openai_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
+        if "content" in response["response"]:
+            content = response["response"]["content"]
+        else:
+            content = response["response"]
         oai_response = {
             "role": "assistant",
-            "content": response["response"]["content"],
+            "content": content,
         }
         if "tool_calls" in response["response"] and len(response["response"]["tool_calls"]) > 0:
             oai_response["tool_calls"] = response["response"]["tool_calls"]
         return oai_response
+
