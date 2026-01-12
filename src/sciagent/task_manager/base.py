@@ -3,9 +3,6 @@ import json
 import sqlite3
 import logging
 import time
-import inspect
-import textwrap
-from collections import Counter
 
 from sciagent.message_proc import print_message
 from sciagent.api.memory import MemoryManagerConfig
@@ -22,6 +19,8 @@ from sciagent.agent.openai import OpenAIAgent
 from sciagent.agent.argo import ArgoAgent
 from sciagent.util import get_timestamp
 from sciagent.tool.base import ToolReturnType
+from sciagent.tool.coding import PythonCodingTool, BashCodingTool
+from sciagent.skill import SkillTool, load_skills
 from sciagent.api.llm_config import LLMConfig, OpenAIConfig, AskSageConfig, ArgoConfig
 from sciagent.agent.memory import MemoryQueryResult, VectorStore
 from sciagent.exceptions import MaxRoundsReached
@@ -47,6 +46,7 @@ class BaseTaskManager:
         llm_config: LLMConfig = None,
         memory_config: Optional[MemoryManagerConfig] = None,
         tools: list[BaseTool] = (), 
+        skill_dirs: Optional[Sequence[str]] = None,
         message_db_path: Optional[str] = None,
         build: bool = True,
         *args,
@@ -69,6 +69,8 @@ class BaseTaskManager:
             Overrides propagated to the agent for custom memory behaviour.
         tools : list[BaseTool]
             A list of tools provided to the agent.
+        skill_dirs : Optional[Sequence[str]]
+            Directories that contain skill folders with SKILL.md definitions.
         message_db_path : Optional[str]
             If provided, the entire chat history will be stored in 
             a SQLite database at the given path. This is essential
@@ -85,6 +87,8 @@ class BaseTaskManager:
         self.memory_config = memory_config
         self.agent = None
         self.tools = tools
+        self.skill_dirs = list(skill_dirs) if skill_dirs else []
+        self.skill_catalog = []
         
         self.message_db_path = message_db_path
         self.message_db_conn = None
@@ -156,7 +160,43 @@ class BaseTaskManager:
     
     def build_tools(self, *args, **kwargs):
         if self.agent is not None:
-            self.register_tools(self.tools)
+            tools = self._collect_base_tools()
+            self.register_tools(tools)
+
+    def _collect_base_tools(self) -> list[BaseTool]:
+        tools: list[BaseTool] = list(self.tools)
+        self._merge_tools(tools, self._build_default_tools())
+        self._merge_tools(tools, self._build_skill_tools())
+        return tools
+
+    def _merge_tools(self, tools: list[BaseTool], new_tools: list[BaseTool]) -> None:
+        seen_names = self._collect_tool_names(tools)
+        for tool in new_tools:
+            tool_names = self._collect_tool_names([tool])
+            if tool_names and tool_names & seen_names:
+                continue
+            tools.append(tool)
+            seen_names.update(tool_names)
+
+    def _collect_tool_names(self, tools: list[BaseTool]) -> set[str]:
+        names: set[str] = set()
+        for tool in tools:
+            if isinstance(tool, MCPTool):
+                continue
+            for exposed in tool.exposed_tools:
+                names.add(exposed.name)
+        return names
+
+    def _build_default_tools(self) -> list[BaseTool]:
+        return [PythonCodingTool(), BashCodingTool()]
+
+    def _build_skill_tools(self) -> list[BaseTool]:
+        if not self.skill_dirs:
+            self.skill_catalog = []
+            return []
+        skills = load_skills(self.skill_dirs)
+        self.skill_catalog = skills
+        return [SkillTool(skill) for skill in skills]
 
     def register_tools(
         self, 
@@ -309,8 +349,8 @@ class BaseTaskManager:
             "* `/monitor <task description>`: enter monitoring mode. The agent will perform "
             "the described task periodically. Example: `/monitor check the content of status.txt `"
             "every 60 seconds`\n"
-            "* `/subtask <task description>`: launch a sub-task manager that fits the description. "
-            "Arguments will be inferred automatically.\n"
+            "* `/subtask <task description>`: run a skill-driven subtask using the configured "
+            "skill tools and coding tools.\n"
             "* `/return`: return to upper level task\n"
         )
         if self.message_db_conn:
@@ -319,327 +359,88 @@ class BaseTaskManager:
             print(s)
         return s
 
-    def _get_registered_tools(self) -> List[BaseTool]:
-        if self.agent is None:
-            return []
-        return list(getattr(self.agent.tool_manager, "_base_tools", []))
-
-    def _build_task_manager_catalog_payload(self) -> List[Dict[str, Any]]:
-        from sciagent.task_manager.factory import get_task_manager_specs
-
-        specs = get_task_manager_specs()
-        catalog: List[Dict[str, Any]] = []
-        for spec in sorted(specs.values(), key=lambda item: item.name):
-            doc = " ".join(spec.doc.split()) if spec.doc else ""
-            methods: List[Dict[str, Any]] = []
-            for method in spec.methods:
-                method_doc = " ".join(method.doc.split()) if method.doc else ""
-                methods.append(
-                    {
-                        "name": method.name,
-                        "signature": method.signature,
-                        "doc": textwrap.shorten(method_doc, width=400, placeholder="...") if method_doc else "",
-                    }
-                )
-            catalog.append(
+    def get_manager_metadata_summary(self) -> str:
+        llm_summary = repr(self.llm_config)
+        llm_import_path = None
+        if self.llm_config is not None:
+            llm_class = self.llm_config.__class__
+            llm_import_path = f"{llm_class.__module__}.{llm_class.__name__}"
+        tool_info = []
+        excluded_tools = {SkillTool, PythonCodingTool, BashCodingTool}
+        for tool in self._collect_base_tools():
+            if tool.__class__ in excluded_tools:
+                continue
+            tool_class = tool.__class__
+            tool_info.append(
                 {
-                    "name": spec.name,
-                    "module": spec.module,
-                    "doc": textwrap.shorten(doc, width=600, placeholder="...") if doc else "",
-                    "init_signature": spec.init_signature,
-                    "methods": methods,
+                    "class_name": tool_class.__name__,
+                    "import_path": f"{tool_class.__module__}.{tool_class.__name__}",
                 }
             )
-        return catalog
-
-    def _collect_registered_tools_for_prompt(self) -> tuple[List[Dict[str, Any]], Dict[str, BaseTool]]:
-        tools = self._get_registered_tools()
-        if len(tools) == 0:
-            return [], {}
-
-        class_counts = Counter(tool.__class__.__name__ for tool in tools)
-        class_seen = Counter()
-        name_counts = Counter(
-            getattr(tool, "name") for tool in tools if getattr(tool, "name", None) is not None
-        )
-
-        catalog: List[Dict[str, Any]] = []
-        alias_map: Dict[str, BaseTool] = {}
-        for tool in tools:
-            class_name = tool.__class__.__name__
-            class_seen[class_name] += 1
-            if class_counts[class_name] > 1:
-                alias = f"{class_name}#{class_seen[class_name]}"
-            else:
-                alias = class_name
-
-            tool_name = getattr(tool, "name", None)
-            doc = inspect.getdoc(tool.__class__) or ""
-            catalog.append(
-                {
-                    "alias": alias,
-                    "class": class_name,
-                    "tool_name": tool_name,
-                    "description": textwrap.shorten(" ".join(doc.split()), width=300, placeholder="...") if doc else "",
-                }
-            )
-
-            alias_map.setdefault(alias, tool)
-            if tool_name and name_counts[tool_name] == 1:
-                alias_map.setdefault(tool_name, tool)
-            if class_counts[class_name] == 1:
-                alias_map.setdefault(class_name, tool)
-
-        return catalog, alias_map
-
-    def _resolve_tool_placeholders(self, value: Any, alias_map: Dict[str, BaseTool]) -> Any:
-        if isinstance(value, dict):
-            if "$tool" in value:
-                alias = value["$tool"]
-                if alias not in alias_map:
-                    raise KeyError(alias)
-                return alias_map[alias]
-            return {key: self._resolve_tool_placeholders(val, alias_map) for key, val in value.items()}
-        if isinstance(value, list):
-            return [self._resolve_tool_placeholders(item, alias_map) for item in value]
-        return value
+        payload = {
+            "llm_config": llm_summary,
+            "llm_config_import_path": llm_import_path,
+            "tools": tool_info,
+        }
+        return json.dumps(payload, indent=2, default=str)
 
     def launch_task_manager(self, task_request: str) -> None:
         if self.agent is None:
-            logger.warning("Cannot launch a task manager because no agent is configured.")
+            logger.warning("Cannot launch a skill task because no agent is configured.")
             system_message = generate_openai_message(
-                content="Cannot launch a sub task manager because no agent is configured.",
+                content="Cannot launch a skill task because no agent is configured.",
                 role="system",
             )
             self.update_message_history(system_message, update_context=True, update_full_history=True)
             print_message(system_message)
             return
 
-        from sciagent.task_manager.factory import get_task_manager_specs
-
-        specs = get_task_manager_specs()
-        if len(specs) == 0:
-            logger.info("No task managers discovered; skipping launch.")
+        if not self.skill_catalog:
+            logger.info("No skills discovered; skipping skill task launch.")
             system_message = generate_openai_message(
-                content="No task managers are available to launch.", role="system"
-            )
-            self.update_message_history(system_message, update_context=True, update_full_history=True)
-            print_message(system_message)
-            return
-
-        task_manager_catalog = self._build_task_manager_catalog_payload()
-        tool_catalog, alias_map = self._collect_registered_tools_for_prompt()
-
-        manager_catalog_json = json.dumps(task_manager_catalog, indent=2)
-        tool_catalog_json = json.dumps(tool_catalog, indent=2)
-
-        request_text = task_request.strip()
-        if len(request_text) == 0:
-            request_text = "(no additional description provided)"
-
-        parsing_prompt = (
-            "You are responsible for selecting a task manager and preparing arguments to run it.\n"
-            "Use the `task_manager` list below to pick a class by its `name` field. "
-            "When tool instances are required, refer to them using the alias from the `tools` list. "
-            "Represent any tool reference as an object {\"$tool\": \"<alias>\"}.\n"
-            "Return a JSON object with the following keys:\n"
-            "- task_manager (string)\n"
-            "- method (string or null). Use 'run_conversation' if the user wants to chat with the new task manager. "
-            "Use null to indicate the default `run` method.\n"
-            "- init_args (object) with arguments for the constructor. Do not include llm_config, memory_config, "
-            "memory_vector_store, memory_notability_filter, memory_formatter, memory_embedder, message_db_path, or tools "
-            "unless they must override the defaults.\n"
-            "- method_args (object) with keyword arguments for the selected method.\n"
-            "- clarification_prompt (string). Leave empty if you have enough information; otherwise, ask the user a single "
-            "follow-up question.\n"
-            "Always return only the JSON object with those keys. Do not enclose the JSON object in triple backticks.\n"
-            f"task_manager options:\n{manager_catalog_json}\n"
-            f"tools:\n{tool_catalog_json}\n"
-            f"User request: {request_text}"
-        )
-        # Escape image tag
-        parsing_prompt = parsing_prompt.replace("<img", "<img\\")
-
-        local_context: List[Dict[str, Any]] = []
-        parsed_result: Dict[str, Any] = {}
-
-        while True:
-            response, outgoing = self.agent.receive(
-                message=parsing_prompt,
-                context=local_context,
-                return_outgoing_message=True,
-            )
-            self.update_message_history(response, update_context=False, update_full_history=True)
-            local_context.append(outgoing)
-            local_context.append(response)
-
-            try:
-                parsed_result = json.loads(response["content"])
-            except json.JSONDecodeError:
-                parsing_prompt = (
-                    "Your previous response was not valid JSON. "
-                    "Return only the JSON object that matches the requested schema."
-                )
-                continue
-
-            clarification = parsed_result.get("clarification_prompt", "")
-            if clarification:
-                user_answer = self.get_user_input(
-                    prompt=clarification + " ",
-                    display_prompt_in_webui=bool(self.message_db_conn),
-                )
-                parsing_prompt = user_answer
-                continue
-
-            if "task_manager" not in parsed_result:
-                parsing_prompt = (
-                    "The JSON object must include the `task_manager` field. "
-                    "Return the full object again."
-                )
-                continue
-
-            manager_name = parsed_result["task_manager"]
-            if not isinstance(manager_name, str):
-                parsing_prompt = "The `task_manager` field must be a string. Return the JSON object again."
-                continue
-
-            if manager_name not in specs:
-                parsing_prompt = (
-                    f"'{manager_name}' is not a known task manager. Choose one of: "
-                    f"{', '.join(sorted(specs.keys()))}."
-                )
-                continue
-
-            init_args = parsed_result.get("init_args", {})
-            method_args = parsed_result.get("method_args", {})
-            if not isinstance(init_args, dict) or not isinstance(method_args, dict):
-                parsing_prompt = (
-                    "`init_args` and `method_args` must both be JSON objects. Return the JSON object again."
-                )
-                continue
-
-            try:
-                init_args = self._resolve_tool_placeholders(init_args, alias_map)
-                method_args = self._resolve_tool_placeholders(method_args, alias_map)
-            except KeyError as missing_alias:
-                parsing_prompt = (
-                    f"The tool alias '{missing_alias.args[0]}' is not available. "
-                    f"Choose from: {', '.join(sorted(alias_map.keys()))}."
-                )
-                continue
-
-            method_name = parsed_result.get("method")
-            if method_name is not None and not isinstance(method_name, str):
-                parsing_prompt = "The `method` field must be a string or null. Return the JSON object again."
-                continue
-
-            allowed_methods = {m.name for m in specs[manager_name].methods}
-            allowed_methods.update({"run", "run_conversation"})
-            if method_name and method_name not in allowed_methods:
-                parsing_prompt = (
-                    f"Method '{method_name}' is not valid for {manager_name}. "
-                    f"Choose from: {', '.join(sorted(allowed_methods))}."
-                )
-                continue
-
-            parsed_result["init_args"] = init_args
-            parsed_result["method_args"] = method_args
-            break
-
-        manager_class = specs[manager_name].cls
-        init_kwargs = dict(parsed_result.get("init_args", {}))
-        method_kwargs = dict(parsed_result.get("method_args", {}))
-
-        resolved_method_name = parsed_result.get("method") or "run"
-
-        init_signature = inspect.signature(manager_class.__init__)
-        accepts_var_kwargs = any(
-            param.kind == inspect.Parameter.VAR_KEYWORD for param in init_signature.parameters.values()
-        )
-        auto_kwargs = {
-            "llm_config": self.llm_config,
-            "memory_config": self.memory_config,
-            "memory_vector_store": self._memory_vector_store,
-            "memory_notability_filter": self._memory_notability_filter,
-            "memory_formatter": self._memory_formatter,
-            "memory_embedder": self._memory_embedder,
-            "message_db_path": self.message_db_path,
-            "tools": self._get_registered_tools(),
-        }
-        for key, value in auto_kwargs.items():
-            if key == "tools":
-                if key not in init_signature.parameters:
-                    continue
-            elif key not in init_signature.parameters and not accepts_var_kwargs:
-                continue
-            if key in init_kwargs and init_kwargs[key] is not None:
-                continue
-            init_kwargs[key] = value
-
-        try:
-            log_message = generate_openai_message(
-                content=f"Instantiating task manager '{manager_name}' with init_kwargs: {init_kwargs}",
-                role="system",
-            )
-            self.update_message_history(log_message, update_context=True, update_full_history=True)
-            print_message(log_message)
-            sub_manager = manager_class(**init_kwargs)
-        except Exception as exc:  # noqa: BLE001 - surface configuration errors
-            logger.exception("Failed to instantiate task manager '%s'", manager_name)
-            system_message = generate_openai_message(
-                content=f"Failed to instantiate task manager '{manager_name}': {exc}",
+                content="No skills are available to run the subtask.",
                 role="system",
             )
             self.update_message_history(system_message, update_context=True, update_full_history=True)
             print_message(system_message)
             return
 
-        result = None
-        try:
-            if resolved_method_name == "run_conversation":
-                result = sub_manager.run_conversation()
-            else:
-                method_callable = getattr(sub_manager, resolved_method_name)
-                log_message = generate_openai_message(
-                    content=f"Running method '{resolved_method_name}' with method_kwargs: {method_kwargs}. Proceed? (yes/no)",
-                    role="system",
-                )
-                proceed = self.get_user_input(
-                    prompt=log_message["content"],
-                    display_prompt_in_webui=bool(self.message_db_conn),
-                )
-                if proceed.strip().lower() != "yes":
-                    return
-                result = method_callable(**method_kwargs)
-            last_of_sub_manager_context = sub_manager.context[-1] if len(sub_manager.context) > 0 else None
-        except Exception as exc:  # noqa: BLE001
-            logger.exception(
-                "Task manager '%s' failed while running method '%s'", manager_name, resolved_method_name
-            )
-            system_message = generate_openai_message(
-                content=f"Task manager '{manager_name}' raised an error while running '{resolved_method_name}': {exc}",
-                role="system",
-            )
-            self.update_message_history(system_message, update_context=True, update_full_history=True)
-            print_message(system_message)
-            return
-
-        summary_parts = [
-            f"Launched task manager '{manager_name}' using method '{resolved_method_name}'."
+        request_text = task_request.strip() or "(no additional description provided)"
+        skill_catalog = [
+            {
+                "name": skill.name,
+                "tool_name": skill.tool_name,
+                "description": skill.description,
+                "path": skill.path,
+            }
+            for skill in self.skill_catalog
         ]
-        if result is not None:
-            summary_parts.append(f"Result: {result}")
-        if last_of_sub_manager_context is not None:
-            summary_parts.append(f"Last message in sub-task manager context: {last_of_sub_manager_context}")
-        summary_message = generate_openai_message(
-            content=" ".join(summary_parts),
+        skill_catalog_json = json.dumps(skill_catalog, indent=2)
+        skill_prompt = (
+            "You are responsible for executing a subtask using agent skills.\n"
+            "Use the skill tools listed below to retrieve detailed documentation before writing code. "
+            "Then use the coding tools to implement and execute solutions as needed.\n"
+            "If you lack critical information, respond with 'NEED HUMAN' and ask a single clarification question.\n"
+            "When the subtask is complete, respond with 'TERMINATE'.\n"
+            f"Available skill tools:\n{skill_catalog_json}"
+        )
+
+        system_message = generate_openai_message(content=skill_prompt, role="system")
+        self.update_message_history(system_message, update_context=True, update_full_history=True)
+        metadata_message = generate_openai_message(
+            content=(
+                "Current task manager metadata (llm config + tools):\n"
+                f"{self.get_manager_metadata_summary()}"
+            ),
             role="system",
         )
-        self.update_message_history(summary_message, update_context=True, update_full_history=True)
-        print_message(summary_message)
-        
-        # Sync WebUI timestamp so that `get_user_input` doesn't mistaken the last
-        # user input as the current input.
+        self.update_message_history(metadata_message, update_context=True, update_full_history=True)
+        self.run_feedback_loop(
+            initial_prompt=request_text,
+            termination_behavior="return",
+            allow_multiple_tool_calls=True,
+        )
+
         self._sync_webui_user_input_last_timestamp()
 
     def run_conversation(
@@ -1085,15 +886,18 @@ class BaseTaskManager:
                     self.update_message_history(outgoing, update_context=True, update_full_history=True)
                     self.update_message_history(response, update_context=True, update_full_history=True)
                 else:
-                    response, outgoing = self.agent.receive(
-                        "There is no tool call in the response. Make sure you call the tool correctly. "
-                        "If you need human intervention, say \"TERMINATE\".",
-                        image_path=None,
-                        context=self.context,
-                        return_outgoing_message=True
-                    )
-                    self.update_message_history(outgoing, update_context=True, update_full_history=True)
-                    self.update_message_history(response, update_context=True, update_full_history=True)
+                    if "NEED HUMAN" not in response["content"]:
+                        response, outgoing = self.agent.receive(
+                            "There is no tool call in the response. Make sure you call the tool correctly. "
+                            "If you need human intervention, say \"NEED HUMAN\".",
+                            image_path=None,
+                            context=self.context,
+                            return_outgoing_message=True
+                        )
+                        self.update_message_history(outgoing, update_context=True, update_full_history=True)
+                        self.update_message_history(response, update_context=True, update_full_history=True)
+                    else:
+                        continue
                 
                 if n_last_images_to_keep_in_context is not None or n_first_images_to_keep_in_context is not None:
                     n_last_images_to_keep_in_context = n_last_images_to_keep_in_context if n_last_images_to_keep_in_context is not None else 0

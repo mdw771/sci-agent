@@ -1,0 +1,246 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+import logging
+from pathlib import Path
+import re
+from typing import Any, Dict, List, Sequence, Tuple
+
+from sciagent.tool.base import BaseTool, ExposedToolSpec, ToolReturnType
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SkillMetadata:
+    name: str
+    description: str
+    tool_name: str
+    path: str
+
+
+class SkillTool(BaseTool):
+    def __init__(
+        self,
+        metadata: SkillMetadata,
+        *,
+        max_doc_bytes: int = 200_000,
+        require_approval: bool = False,
+        **kwargs: Any,
+    ) -> None:
+        self.metadata = metadata
+        self.max_doc_bytes = max_doc_bytes
+        super().__init__(require_approval=require_approval, **kwargs)
+
+    def _discover_tools(self) -> List[ExposedToolSpec]:
+        def fetch_skill_docs() -> Dict[str, Any]:
+            files, skipped = collect_skill_docs(
+                Path(self.metadata.path), max_doc_bytes=self.max_doc_bytes
+            )
+            return {
+                "name": self.metadata.name,
+                "description": self.metadata.description,
+                "path": self.metadata.path,
+                "files": files,
+                "skipped_files": skipped,
+            }
+
+        fetch_skill_docs.__doc__ = (
+            f"{self.metadata.description}\n\n"
+            "Returns the documentation files for this skill."
+        )
+        return [
+            ExposedToolSpec(
+                name=self.metadata.tool_name,
+                function=fetch_skill_docs,
+                return_type=ToolReturnType.DICT,
+            )
+        ]
+
+
+def load_skills(skill_dirs: Sequence[str]) -> List[SkillMetadata]:
+    skills: List[SkillMetadata] = []
+    seen_tool_names: set[str] = set()
+
+    for base_dir in skill_dirs:
+        base_path = Path(base_dir)
+        if not base_path.exists():
+            logger.warning("Skill directory not found: %s", base_dir)
+            continue
+
+        if (base_path / "SKILL.md").exists():
+            skill_paths = [base_path]
+        else:
+            skill_paths = sorted({path.parent for path in base_path.rglob("SKILL.md")})
+
+        for skill_path in skill_paths:
+            metadata = parse_skill_metadata(skill_path)
+            if metadata is None:
+                continue
+            tool_name = ensure_unique_tool_name(metadata.tool_name, seen_tool_names)
+            if tool_name != metadata.tool_name:
+                metadata = SkillMetadata(
+                    name=metadata.name,
+                    description=metadata.description,
+                    tool_name=tool_name,
+                    path=metadata.path,
+                )
+            skills.append(metadata)
+
+    return skills
+
+
+def parse_skill_metadata(skill_dir: Path) -> SkillMetadata | None:
+    skill_file = skill_dir / "SKILL.md"
+    if not skill_file.exists():
+        return None
+
+    text = skill_file.read_text(encoding="utf-8", errors="replace")
+    lines = text.splitlines()
+    frontmatter, body_lines = parse_frontmatter(lines)
+
+    name = frontmatter.get("name")
+    description = frontmatter.get("description")
+    name_index = 0
+    if not name:
+        name, name_index = extract_name(body_lines)
+    if not name:
+        name = skill_dir.name
+        name_index = 0
+    if not description:
+        description = extract_description(body_lines, name_index)
+    if not description:
+        description = "No description provided."
+
+    tool_name = make_tool_name(name)
+    return SkillMetadata(
+        name=name,
+        description=description,
+        tool_name=tool_name,
+        path=str(skill_dir),
+    )
+
+
+def parse_frontmatter(lines: List[str]) -> Tuple[Dict[str, str], List[str]]:
+    if not lines or lines[0].strip() != "---":
+        return {}, lines
+
+    for index in range(1, len(lines)):
+        if lines[index].strip() == "---":
+            frontmatter_lines = lines[1:index]
+            body_lines = lines[index + 1 :]
+            return read_frontmatter(frontmatter_lines), body_lines
+
+    return {}, lines
+
+
+def read_frontmatter(lines: List[str]) -> Dict[str, str]:
+    frontmatter: Dict[str, str] = {}
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if ":" not in stripped:
+            continue
+        key, value = stripped.split(":", 1)
+        frontmatter[key.strip()] = value.strip().strip("\"").strip("'")
+    return frontmatter
+
+
+def extract_name(lines: List[str]) -> Tuple[str | None, int]:
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            name = stripped.lstrip("#").strip()
+            if name:
+                return name, index
+
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.lower().startswith("name:"):
+            name = stripped.split(":", 1)[1].strip()
+            if name:
+                return name, index
+
+    return None, 0
+
+
+def extract_description(lines: List[str], name_index: int) -> str:
+    for line in lines:
+        stripped = line.strip()
+        if stripped.lower().startswith("description:"):
+            return stripped.split(":", 1)[1].strip()
+
+    return extract_first_paragraph(lines, start_index=name_index + 1)
+
+
+def extract_first_paragraph(lines: List[str], start_index: int) -> str:
+    paragraphs: List[str] = []
+    for line in lines[start_index:]:
+        stripped = line.strip()
+        if not stripped:
+            if paragraphs:
+                break
+            continue
+        paragraphs.append(stripped)
+    return " ".join(paragraphs)
+
+
+def make_tool_name(name: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9_-]+", "-", name.strip().lower())
+    slug = re.sub(r"-+", "-", slug).strip("-")
+    if not slug:
+        slug = "skill"
+    return f"skill-{slug}"
+
+
+def ensure_unique_tool_name(tool_name: str, seen: set[str]) -> str:
+    if tool_name not in seen:
+        seen.add(tool_name)
+        return tool_name
+
+    index = 2
+    while True:
+        candidate = f"{tool_name}-{index}"
+        if candidate not in seen:
+            seen.add(candidate)
+            return candidate
+        index += 1
+
+
+def collect_skill_docs(
+    skill_dir: Path,
+    *,
+    max_doc_bytes: int = 200_000,
+) -> Tuple[Dict[str, str], List[str]]:
+    files: Dict[str, str] = {}
+    skipped: List[str] = []
+
+    for path in sorted(skill_dir.rglob("*")):
+        if path.is_dir():
+            continue
+        if path.name.startswith("."):
+            continue
+        if "__pycache__" in path.parts:
+            continue
+
+        relative_path = str(path.relative_to(skill_dir))
+        try:
+            size = path.stat().st_size
+        except OSError:
+            skipped.append(relative_path)
+            continue
+
+        if size > max_doc_bytes:
+            skipped.append(relative_path)
+            continue
+
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            skipped.append(relative_path)
+            continue
+
+        files[relative_path] = content
+
+    return files, skipped

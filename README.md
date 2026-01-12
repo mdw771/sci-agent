@@ -17,3 +17,25 @@ We recommend using [uv](https://docs.astral.sh/uv/getting-started/installation/)
 uv venv
 uv sync
 ```
+
+## Agent Skills
+
+Sci-agent can load Agent Skills folders and expose them as tools. Each skill is a
+folder containing a `SKILL.md` file with required YAML frontmatter:
+
+```markdown
+---
+name: <short-identifier>
+description: <when to use this skill>
+---
+```
+
+The Markdown body can include any workflow instructions, examples, or templates.
+Configure `skill_dirs` on `BaseTaskManager` to point at skill directories (see
+`skills/scan-lab-motor/SKILL.md` for an example).
+
+One important usage of skills is to inform the agent in `BaseTaskManager` of how it
+can launch a sub-task manager that performs a particular task by writing codes. If
+you create subclasses of `BaseTaskManager` with your own workflow, you are always
+encouraged to create a skill for it so that you can let your `BaseTaskManager` agent
+launch that task manager through chat instead of scripting it manually.

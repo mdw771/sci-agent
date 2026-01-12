@@ -1,13 +1,16 @@
 import atexit
 import random
+import json
 import string
 import unittest.mock as mock
 from unittest.mock import MagicMock, call
 from typing import Callable, Dict, Any, Iterable, Iterator, Tuple
+from pathlib import Path
 
 from sciagent.task_manager.base import BaseTaskManager
 from sciagent.tool.base import ToolReturnType
 from sciagent.api.llm_config import OpenAIConfig
+from sciagent.skill import load_skills
 
 import test_utils as tutils
 
@@ -219,6 +222,7 @@ class TestBaseTaskManagerFeedbackLoop(tutils.BaseTester):
         # Verify user was prompted when TERMINATE condition triggered
         self.task_manager.get_user_input.assert_called_once()
 
+
     def test_run_feedback_loop_with_exception_tool_response(self):
         """Test feedback loop with EXCEPTION tool response."""
         # Setup
@@ -341,7 +345,7 @@ class TestBaseTaskManagerFeedbackLoop(tutils.BaseTester):
         # Verify no tool calls error message was sent
         self.task_manager.agent.receive.assert_any_call(
             "There is no tool call in the response. Make sure you call the tool correctly. "
-            "If you need human intervention, say \"TERMINATE\".",
+            "If you need human intervention, say \"NEED HUMAN\".",
             image_path=None,
             context=[],
             return_outgoing_message=True
@@ -586,6 +590,67 @@ class TestBaseTaskManagerFeedbackLoop(tutils.BaseTester):
         )
 
 
+class TestBaseTaskManagerLaunchSubtask(tutils.BaseTester):
+
+    def setup_method(
+        self,
+        name="",
+        generate_data=False,
+        generate_gold=False,
+        debug=False,
+        action=None,
+        pytestconfig=None,
+    ):
+        super().setup_method(
+            name=name,
+            generate_data=generate_data,
+            generate_gold=generate_gold,
+            debug=debug,
+            action=action,
+            pytestconfig=pytestconfig,
+        )
+
+        self.mock_llm_config = OpenAIConfig(
+            model="gpt-4",
+            api_key="fake-key",
+            base_url="https://api.openai.com/v1",
+        )
+
+        skill_dir = Path(__file__).resolve().parents[1] / "skills"
+        self.task_manager = BaseTaskManager(
+            llm_config=self.mock_llm_config,
+            tools=[],
+            skill_dirs=[str(skill_dir)],
+            build=False,
+        )
+        self.task_manager.agent = MagicMock()
+        self.task_manager.update_message_history = MagicMock()
+        self.task_manager.run_feedback_loop = MagicMock()
+        self.task_manager.skill_catalog = load_skills([str(skill_dir)])
+
+    def test_launch_task_manager_adds_metadata_and_runs_feedback_loop(self):
+        self.task_manager.launch_task_manager("scan the lab motor")
+
+        self.task_manager.run_feedback_loop.assert_called_once_with(
+            initial_prompt="scan the lab motor",
+            termination_behavior="return",
+            allow_multiple_tool_calls=True,
+        )
+
+        metadata_message = None
+        for call_args in self.task_manager.update_message_history.call_args_list:
+            message = call_args.args[0]
+            content = message.get("content", "")
+            if "Current task manager metadata" in content:
+                metadata_message = content
+                break
+
+        assert metadata_message is not None
+        summary_json = metadata_message.split("\n", 1)[1]
+        summary = json.loads(summary_json)
+        assert summary["llm_config_import_path"] == "sciagent.api.llm_config.OpenAIConfig"
+
+
 if __name__ == "__main__":
     tester = TestBaseTaskManagerFeedbackLoop()
     test_methods = [
@@ -602,3 +667,7 @@ if __name__ == "__main__":
     for method in test_methods:
         tester.setup_method()
         getattr(tester, method)()
+
+    subtask_tester = TestBaseTaskManagerLaunchSubtask()
+    subtask_tester.setup_method()
+    subtask_tester.test_launch_task_manager_adds_metadata_and_runs_feedback_loop()
