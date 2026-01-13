@@ -167,7 +167,11 @@ class BaseTool:
                     continue
                 seen.add(attr_name)
                 bound_callable = getattr(self, attr_name)
-                tool_name = getattr(target, "tool_name", attr_name)
+                tool_name_overrides = getattr(self, "tool_name_overrides", None)
+                if tool_name_overrides and attr_name in tool_name_overrides:
+                    tool_name = tool_name_overrides[attr_name]
+                else:
+                    tool_name = getattr(target, "tool_name", attr_name)
                 return_type = getattr(target, "tool_return_type", None)
                 discovered.append(
                     ExposedToolSpec(

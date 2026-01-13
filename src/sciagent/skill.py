@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 from typing import Any, Dict, List, Sequence, Tuple
 
-from sciagent.tool.base import BaseTool, ExposedToolSpec, ToolReturnType
+from sciagent.tool.base import BaseTool, ToolReturnType, tool
 
 logger = logging.getLogger(__name__)
 
@@ -32,30 +32,22 @@ class SkillTool(BaseTool):
         self.max_doc_bytes = max_doc_bytes
         super().__init__(require_approval=require_approval, **kwargs)
 
-    def _discover_tools(self) -> List[ExposedToolSpec]:
-        def fetch_skill_docs() -> Dict[str, Any]:
-            files, skipped = collect_skill_docs(
-                Path(self.metadata.path), max_doc_bytes=self.max_doc_bytes
-            )
-            return {
-                "name": self.metadata.name,
-                "description": self.metadata.description,
-                "path": self.metadata.path,
-                "files": files,
-                "skipped_files": skipped,
-            }
+    def build(self, *args: Any, **kwargs: Any) -> None:
+        self.tool_name_overrides = {"fetch_skill_docs": self.metadata.tool_name}
 
-        fetch_skill_docs.__doc__ = (
-            f"{self.metadata.description}\n\n"
-            "Returns the documentation files for this skill."
+    @tool(name="fetch_skill_docs", return_type=ToolReturnType.DICT)
+    def fetch_skill_docs(self) -> Dict[str, Any]:
+        """Returns the documentation files for this skill."""
+        files, skipped = collect_skill_docs(
+            Path(self.metadata.path), max_doc_bytes=self.max_doc_bytes
         )
-        return [
-            ExposedToolSpec(
-                name=self.metadata.tool_name,
-                function=fetch_skill_docs,
-                return_type=ToolReturnType.DICT,
-            )
-        ]
+        return {
+            "name": self.metadata.name,
+            "description": self.metadata.description,
+            "path": self.metadata.path,
+            "files": files,
+            "skipped_files": skipped,
+        }
 
 
 def load_skills(skill_dirs: Sequence[str]) -> List[SkillMetadata]:
@@ -216,13 +208,26 @@ def collect_skill_docs(
     files: Dict[str, str] = {}
     skipped: List[str] = []
 
-    for path in sorted(skill_dir.rglob("*")):
+    doc_paths: list[Path] = []
+    for path in skill_dir.rglob("*"):
         if path.is_dir():
             continue
         if path.name.startswith("."):
             continue
         if "__pycache__" in path.parts:
             continue
+        if path.suffix.lower() != ".md":
+            continue
+
+        doc_paths.append(path)
+
+    def path_sort_key(path: Path) -> tuple[int, str]:
+        relative_path = str(path.relative_to(skill_dir))
+        if relative_path.lower() == "skill.md":
+            return (0, relative_path.lower())
+        return (1, relative_path.lower())
+
+    for path in sorted(doc_paths, key=path_sort_key):
 
         relative_path = str(path.relative_to(skill_dir))
         try:
