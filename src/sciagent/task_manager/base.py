@@ -417,10 +417,15 @@ class BaseTaskManager:
         ]
         skill_catalog_json = json.dumps(skill_catalog, indent=2)
         skill_prompt = (
-            "You are responsible for executing a subtask using agent skills.\n"
-            "Use the skill tools listed below to retrieve detailed documentation before writing code. "
-            "Then use the coding tools to implement and execute solutions as needed.\n"
-            "If you lack critical information, respond with 'NEED HUMAN' and ask a single clarification question.\n"
+            "The user requested to launch a sub-task manager for a specified task. Create a Python "
+            "script to set up the task manager, and execute it.\n"
+            "The skill tools can be used to retrieved detailed documentation about each task manager. "
+            "Select the proper task manager that fulfills the user's request, and call the skill tool; "
+            "alternatively, you can also use the bash tool to look inside the skill directory according "
+            "to the path of the skill tool and browse documentation files there.\n"
+            "After reading the documentation, create a script to launch the task manager. "
+            "If you lack critical information needed to set up the task manager, respond with 'NEED HUMAN' "
+            "and ask a single clarification question.\n"
             "When the subtask is complete, respond with 'TERMINATE'.\n"
             f"Available skill tools:\n{skill_catalog_json}"
         )
