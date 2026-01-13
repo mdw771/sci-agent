@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import os
-import selectors
 import subprocess
 import sys
 import tempfile
-import time
 from typing import Any, Dict, Optional
 
 from sciagent.tool.base import BaseTool, ToolReturnType, check, tool
@@ -88,81 +86,34 @@ class PythonCodingTool(BaseTool):
         env.update(self._environment)
 
         tmp_file = tempfile.NamedTemporaryFile("w", suffix=".py", delete=False)
-        stderr_file = tempfile.NamedTemporaryFile("w+", suffix=".log", delete=False)
         try:
             tmp_file.write(code)
             tmp_file.flush()
             tmp_file.close()
 
-            process = subprocess.Popen(
+            result = subprocess.run(
                 [sys.executable, tmp_file.name],
-                stdout=subprocess.PIPE,
-                stderr=stderr_file,
-                stdin=subprocess.PIPE if input_text is not None else None,
+                capture_output=True,
                 text=True,
                 cwd=exec_cwd,
                 env=env,
+                timeout=exec_timeout,
+                input=input_text,
             )
 
-            if input_text is not None and process.stdin is not None:
-                process.stdin.write(input_text)
-                process.stdin.close()
-
-            stdout_chunks: list[str] = []
-            selector = selectors.DefaultSelector()
-            if process.stdout is not None:
-                selector.register(process.stdout, selectors.EVENT_READ)
-
-            start_time = time.monotonic()
-            timed_out = False
-
-            while True:
-                if exec_timeout is not None:
-                    remaining = exec_timeout - (time.monotonic() - start_time)
-                    if remaining <= 0:
-                        timed_out = True
-                        process.kill()
-                        break
-                else:
-                    remaining = None
-
-                events = selector.select(timeout=remaining)
-                for key, _ in events:
-                    line = key.fileobj.readline()
-                    if line == "":
-                        selector.unregister(key.fileobj)
-                        continue
-                    print(line, end="")
-                    stdout_chunks.append(line)
-
-                if process.poll() is not None:
-                    break
-
-            if process.stdout is not None:
-                remaining_output = process.stdout.read()
-                if remaining_output:
-                    print(remaining_output, end="")
-                    stdout_chunks.append(remaining_output)
-
-            process.wait()
-
-            stderr_file.seek(0)
-            stderr_text = stderr_file.read()
-
-            if timed_out:
-                return {
-                    "stdout": "".join(stdout_chunks),
-                    "stderr": stderr_text,
-                    "returncode": None,
-                    "timeout": True,
-                    "error": f"Execution timed out after {exec_timeout} seconds",
-                }
-
             return {
-                "stdout": "".join(stdout_chunks),
-                "stderr": stderr_text,
-                "returncode": process.returncode,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "returncode": result.returncode,
                 "timeout": False,
+            }
+        except subprocess.TimeoutExpired as exc:
+            return {
+                "stdout": exc.stdout or "",
+                "stderr": exc.stderr or "",
+                "returncode": None,
+                "timeout": True,
+                "error": f"Execution timed out after {exec_timeout} seconds",
             }
         except Exception as exc:  # pragma: no cover - best effort reporting
             return {
@@ -175,11 +126,6 @@ class PythonCodingTool(BaseTool):
         finally:
             try:
                 os.unlink(tmp_file.name)
-            except OSError:
-                pass
-            try:
-                stderr_file.close()
-                os.unlink(stderr_file.name)
             except OSError:
                 pass
 
@@ -227,81 +173,34 @@ class BashCodingTool(BaseTool):
         env.update(self._environment)
 
         tmp_file = tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False)
-        stderr_file = tempfile.NamedTemporaryFile("w+", suffix=".log", delete=False)
         try:
             tmp_file.write(code)
             tmp_file.flush()
             tmp_file.close()
 
-            process = subprocess.Popen(
+            result = subprocess.run(
                 [self._shell_path, tmp_file.name],
-                stdout=subprocess.PIPE,
-                stderr=stderr_file,
-                stdin=subprocess.PIPE if input_text is not None else None,
+                capture_output=True,
                 text=True,
                 cwd=exec_cwd,
                 env=env,
+                timeout=exec_timeout,
+                input=input_text,
             )
 
-            if input_text is not None and process.stdin is not None:
-                process.stdin.write(input_text)
-                process.stdin.close()
-
-            stdout_chunks: list[str] = []
-            selector = selectors.DefaultSelector()
-            if process.stdout is not None:
-                selector.register(process.stdout, selectors.EVENT_READ)
-
-            start_time = time.monotonic()
-            timed_out = False
-
-            while True:
-                if exec_timeout is not None:
-                    remaining = exec_timeout - (time.monotonic() - start_time)
-                    if remaining <= 0:
-                        timed_out = True
-                        process.kill()
-                        break
-                else:
-                    remaining = None
-
-                events = selector.select(timeout=remaining)
-                for key, _ in events:
-                    line = key.fileobj.readline()
-                    if line == "":
-                        selector.unregister(key.fileobj)
-                        continue
-                    print(line, end="")
-                    stdout_chunks.append(line)
-
-                if process.poll() is not None:
-                    break
-
-            if process.stdout is not None:
-                remaining_output = process.stdout.read()
-                if remaining_output:
-                    print(remaining_output, end="")
-                    stdout_chunks.append(remaining_output)
-
-            process.wait()
-
-            stderr_file.seek(0)
-            stderr_text = stderr_file.read()
-
-            if timed_out:
-                return {
-                    "stdout": "".join(stdout_chunks),
-                    "stderr": stderr_text,
-                    "returncode": None,
-                    "timeout": True,
-                    "error": f"Execution timed out after {exec_timeout} seconds",
-                }
-
             return {
-                "stdout": "".join(stdout_chunks),
-                "stderr": stderr_text,
-                "returncode": process.returncode,
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "returncode": result.returncode,
                 "timeout": False,
+            }
+        except subprocess.TimeoutExpired as exc:
+            return {
+                "stdout": exc.stdout or "",
+                "stderr": exc.stderr or "",
+                "returncode": None,
+                "timeout": True,
+                "error": f"Execution timed out after {exec_timeout} seconds",
             }
         except Exception as exc:  # pragma: no cover - best effort reporting
             return {
@@ -314,10 +213,5 @@ class BashCodingTool(BaseTool):
         finally:
             try:
                 os.unlink(tmp_file.name)
-            except OSError:
-                pass
-            try:
-                stderr_file.close()
-                os.unlink(stderr_file.name)
             except OSError:
                 pass
