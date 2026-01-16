@@ -724,15 +724,22 @@ class BaseAgent:
             
         # Send messages, get response and print it.
         if request_response:
-            for i in range(5):
+            max_retries = 5
+            for i in range(max_retries):
                 try:
                     response = self.send_message_and_get_response(combined_messages)
                     print_message(response)
                     break
                 except Exception as e:
                     logger.error(f"Error sending message and getting response: {e}")
-                    logger.error(f"Retrying...({i+1}/5)")
+                    logger.error(f"Retrying...({i+1}/{max_retries})")
                     time.sleep(1)
+                    if i == max_retries - 1:
+                        response = generate_openai_message(
+                            content="Failed to send message and get response after multiple retries. " + str(e),
+                            role="assistant"
+                        )
+                        print_message(response)
 
         if request_response and self.memory_manager is not None and message is not None:
             self._post_response_memory_update(
