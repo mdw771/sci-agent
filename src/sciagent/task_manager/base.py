@@ -48,6 +48,7 @@ class BaseTaskManager:
         tools: list[BaseTool] = (), 
         skill_dirs: Optional[Sequence[str]] = None,
         message_db_path: Optional[str] = None,
+        use_webui: bool = False,
         build: bool = True,
         *args,
         memory_vector_store: Optional[VectorStore] = None,
@@ -73,9 +74,10 @@ class BaseTaskManager:
             Directories that contain skill folders with SKILL.md definitions.
         message_db_path : Optional[str]
             If provided, the entire chat history will be stored in 
-            a SQLite database at the given path. This is essential
-            if you want to use the WebUI, which polls the database
-            for new messages.
+            a SQLite database at the given path.
+        use_webui : bool
+            If True, user input will be received from the WebUI via
+            the message database. This requires `message_db_path`.
         build : bool
             Whether to build the internal state of the task manager.
         """
@@ -90,6 +92,10 @@ class BaseTaskManager:
         self.skill_dirs = list(skill_dirs) if skill_dirs else []
         self.skill_catalog = []
         
+        if use_webui and not message_db_path:
+            raise ValueError("`use_webui` requires `message_db_path` to be set.")
+
+        self.use_webui = use_webui
         self.message_db_path = message_db_path
         self.message_db_conn = None
         self.webui_user_input_last_timestamp = 0
@@ -118,10 +124,14 @@ class BaseTaskManager:
             # Set timestamp buffer to the timestamp of the last user input in the database
             # if it exists..
             cursor = self.message_db_conn.cursor()
-            cursor.execute("SELECT timestamp, role, content, tool_calls, image FROM messages WHERE role = 'user_webui' ORDER BY rowid")
-            messages = cursor.fetchall()
-            if len(messages) > 0 and self.webui_user_input_last_timestamp == 0:
-                self.webui_user_input_last_timestamp = int(messages[-1][0])
+            if self.use_webui:
+                cursor.execute(
+                    "SELECT timestamp, role, content, tool_calls, image FROM messages "
+                    "WHERE role = 'user_webui' ORDER BY rowid"
+                )
+                messages = cursor.fetchall()
+                if len(messages) > 0 and self.webui_user_input_last_timestamp == 0:
+                    self.webui_user_input_last_timestamp = int(messages[-1][0])
     
     def build_agent(self, *args, **kwargs):
         """Build the assistant(s)."""
@@ -272,10 +282,9 @@ class BaseTaskManager:
         display_prompt_in_webui: bool = False,
         *args, **kwargs
     ) -> str:
-        """Get user input. If the task manager has a SQL message database connection,
-        it will be assumed that the user input is coming from the WebUI and is relayed
-        by the database. Otherwise, the user will be prompted to enter a message from
-        terminal.
+        """Get user input. If WebUI mode is enabled, input is relayed by the
+        SQL message database. Otherwise, the user will be prompted to enter a
+        message from terminal.
         
         Parameters
         ----------
@@ -289,7 +298,9 @@ class BaseTaskManager:
         str
             The user input.
         """
-        if self.message_db_conn:
+        if self.use_webui:
+            if not self.message_db_conn:
+                raise RuntimeError("WebUI input requires an active message database connection.")
             logger.info("Getting user input from relay database. Please enter your message in the WebUI.")
             cursor = self.message_db_conn.cursor()
             if display_prompt_in_webui:
@@ -306,7 +317,7 @@ class BaseTaskManager:
             return message
         
     def _sync_webui_user_input_last_timestamp(self) -> None:
-        if self.message_db_conn:
+        if self.use_webui and self.message_db_conn:
             cursor = self.message_db_conn.cursor()
             cursor.execute(
                 "SELECT timestamp, role, content, tool_calls, image FROM messages WHERE role = 'user_webui' ORDER BY rowid"
@@ -325,7 +336,7 @@ class BaseTaskManager:
         )
         response = self.get_user_input(
             prompt,
-            display_prompt_in_webui=bool(self.message_db_conn),
+            display_prompt_in_webui=self.use_webui,
         )
         approved = response.strip().lower() in {"y", "yes"}
         logger.info(
@@ -353,10 +364,13 @@ class BaseTaskManager:
             "skill tools and coding tools.\n"
             "* `/return`: return to upper level task\n"
         )
-        if self.message_db_conn:
-            self.add_message_to_db({"role": "system", "content": s})
+        if self.use_webui:
+            if self.message_db_conn:
+                self.add_message_to_db({"role": "system", "content": s})
         else:
             print(s)
+            if self.message_db_conn:
+                self.add_message_to_db({"role": "system", "content": s})
         return s
 
     def get_manager_metadata_summary(self) -> str:
@@ -499,13 +513,13 @@ class BaseTaskManager:
                         context=self.context, 
                         return_outgoing_message=True
                     )
-                    # If message DB is used, user input should come from WebUI which writes
+                    # If WebUI is used, user input should come from WebUI which writes
                     # to the DB, so we don't update DB again.
                     self.update_message_history(
                         outgoing_message, 
                         update_context=True, 
                         update_full_history=True, 
-                        update_db=(self.message_db_conn is None)
+                        update_db=not self.use_webui
                     )
                     self.update_message_history(response, update_context=True, update_full_history=True)
                 
@@ -584,7 +598,7 @@ class BaseTaskManager:
             except json.JSONDecodeError:
                 parsing_prompt = self.get_user_input(
                     prompt=f"Failed to parse the task description. Please try again. {response['content']}",
-                    display_prompt_in_webui=bool(self.message_db_conn),
+                    display_prompt_in_webui=self.use_webui,
                 )
                 continue
             break
@@ -809,7 +823,7 @@ class BaseTaskManager:
                                 "Termination condition triggered. What to do next? "
                                 "(`/exit`: exit; `/chat`: chat mode; `/help`: show command help): "
                             ),
-                            display_prompt_in_webui=True
+                            display_prompt_in_webui=self.use_webui
                         )
                         if message.lower() == "/exit":
                             return
