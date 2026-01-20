@@ -17,6 +17,7 @@ class AskSageAgent(BaseAgent):
     def __init__(
         self,
         llm_config: AskSageConfig,
+        name: str = "assistant",
         system_message: str = None,
         memory_config: Optional[MemoryManagerConfig] = None,
         *,
@@ -44,6 +45,7 @@ class AskSageAgent(BaseAgent):
         """
         super().__init__(
             llm_config=llm_config,
+            name=name,
             system_message=system_message,
             memory_config=memory_config,
             memory_vector_store=memory_vector_store,

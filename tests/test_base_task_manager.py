@@ -7,6 +7,8 @@ from unittest.mock import MagicMock, call
 from typing import Callable, Dict, Any, Iterable, Iterator, Tuple
 from pathlib import Path
 
+import pytest
+
 from sciagent.task_manager.base import BaseTaskManager
 from sciagent.tool.base import ToolReturnType
 from sciagent.api.llm_config import OpenAIConfig
@@ -649,6 +651,66 @@ class TestBaseTaskManagerLaunchSubtask(tutils.BaseTester):
         summary_json = metadata_message.split("\n", 1)[1]
         summary = json.loads(summary_json)
         assert summary["llm_config_import_path"] == "sciagent.api.llm_config.OpenAIConfig"
+
+
+class TestBaseTaskManagerMultiAgent(tutils.BaseTester):
+
+    def setup_method(
+        self,
+        name="",
+        generate_data=False,
+        generate_gold=False,
+        debug=False,
+        action=None,
+        pytestconfig=None,
+    ):
+        super().setup_method(
+            name=name,
+            generate_data=generate_data,
+            generate_gold=generate_gold,
+            debug=debug,
+            action=action,
+            pytestconfig=pytestconfig,
+        )
+
+        self.mock_llm_config = OpenAIConfig(
+            model="gpt-4",
+            api_key="fake-key",
+            base_url="https://api.openai.com/v1",
+        )
+        self.task_manager = BaseTaskManager(
+            llm_config=self.mock_llm_config,
+            tools=[],
+            build=False,
+        )
+
+    def test_add_agent_and_lookup_by_name(self):
+        def make_agent(*, name: str):
+            agent = MagicMock()
+            agent.name = name
+            agent.llm_config = self.mock_llm_config
+            return agent
+
+        with (
+            mock.patch.object(self.task_manager, "_collect_base_tools", return_value=[]),
+            mock.patch.object(self.task_manager, "_create_agent") as create_agent,
+        ):
+            create_agent.side_effect = lambda llm_config, name="assistant": make_agent(name=name)
+
+            agent = self.task_manager.add_agent(
+                llm_config=self.mock_llm_config,
+                name="planner",
+            )
+
+            assert agent is not None
+            assert self.task_manager.agent_group.default is agent
+            assert self.task_manager.agent_group.get_by_name("planner") is agent
+
+            with pytest.raises(ValueError, match="already exists"):
+                self.task_manager.add_agent(
+                    llm_config=self.mock_llm_config,
+                    name="planner",
+                )
 
 
 if __name__ == "__main__":

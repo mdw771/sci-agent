@@ -291,6 +291,7 @@ class BaseAgent:
     def __init__(
         self,
         llm_config: LLMConfig,
+        name: str = "assistant",
         system_message: str = "",
         memory_config: Optional[MemoryManagerConfig] = None,
         *,
@@ -307,6 +308,8 @@ class BaseAgent:
             Configuration for the agent. It should be an instance of a subclass
             of LLMConfig. Refer to the documentation of the config classes for
             more details.
+        name : str, optional
+            Name used to identify the agent in a group.
         system_message : str, optional
             The system message for the OpenAI-compatible API.
         memory_config : MemoryManagerConfig, optional
@@ -325,6 +328,7 @@ class BaseAgent:
             Override the embedding function for memory operations.
         """
         self.llm_config = llm_config
+        self.name = name
         
         self.message_hooks = []
         

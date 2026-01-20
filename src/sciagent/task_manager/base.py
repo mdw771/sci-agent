@@ -17,6 +17,7 @@ from sciagent.tool.base import BaseTool
 from sciagent.tool.mcp import MCPTool
 from sciagent.agent.openai import OpenAIAgent
 from sciagent.agent.argo import ArgoAgent
+from sciagent.agent.base import BaseAgent
 from sciagent.util import get_timestamp
 from sciagent.tool.base import ToolReturnType
 from sciagent.tool.coding import PythonCodingTool, BashCodingTool
@@ -35,6 +36,19 @@ except ImportError:
     AskSageAgent = None
 
 logger = logging.getLogger(__name__)
+
+
+class AgentGroup(list[BaseAgent]):
+
+    @property
+    def default(self) -> Optional[BaseAgent]:
+        return self[0] if self else None
+
+    def get_by_name(self, name: str) -> Optional[BaseAgent]:
+        for agent in self:
+            if agent.name == name:
+                return agent
+        return None
 
 
 class BaseTaskManager:
@@ -87,7 +101,7 @@ class BaseTaskManager:
         if isinstance(memory_config, dict):  # type: ignore[unreachable]
             memory_config = MemoryManagerConfig.from_dict(memory_config)  # pragma: no cover - legacy path
         self.memory_config = memory_config
-        self.agent = None
+        self.agent_group = AgentGroup()
         self.tools = tools
         self.skill_dirs = list(skill_dirs) if skill_dirs else []
         self.skill_catalog = []
@@ -107,6 +121,20 @@ class BaseTaskManager:
         
         if build:
             self.build()
+
+    @property
+    def agent(self) -> Optional[BaseAgent]:
+        return self.agent_group.default
+
+    @agent.setter
+    def agent(self, agent: Optional[BaseAgent]) -> None:
+        if agent is None:
+            self.agent_group = AgentGroup()
+            return
+        if self.agent_group:
+            self.agent_group[0] = agent
+        else:
+            self.agent_group.append(agent)
         
     def build(self, *args, **kwargs):
         self.build_db()
@@ -140,25 +168,56 @@ class BaseTaskManager:
                 "Skipping agent build because `llm_config` is not provided."
             )
             return
-        
-        if not isinstance(self.llm_config, LLMConfig):
+        agent = self._create_agent(self.llm_config)
+        if agent is not None:
+            self.agent_group = AgentGroup([agent])
+
+    def add_agent(
+        self,
+        llm_config: Optional[LLMConfig] = None,
+        name: Optional[str] = None,
+    ) -> Optional[BaseAgent]:
+        if llm_config is None:
+            default_agent = self.agent
+            if default_agent is not None:
+                llm_config = default_agent.llm_config
+            else:
+                llm_config = self.llm_config
+        if llm_config is None:
+            logger.info(
+                "Skipping agent build because `llm_config` is not provided."
+            )
+            return None
+        agent_name = name or "assistant"
+        if self.agent_group.get_by_name(agent_name) is not None:
+            raise ValueError(f"An agent named '{agent_name}' already exists.")
+        agent = self._create_agent(llm_config, name=agent_name)
+        if agent is None:
+            return None
+        self.agent_group.append(agent)
+        tools = self._collect_base_tools()
+        if tools:
+            self.register_tools(tools, agent=agent)
+        return agent
+
+    def _create_agent(self, llm_config: LLMConfig, name: str = "assistant") -> BaseAgent:
+        if not isinstance(llm_config, LLMConfig):
             raise ValueError(
                 "`llm_config` must be an instance of `LLMConfig`. The type of this "
                 "config object will be used to determine the API type of the LLM."
             )
-        
         agent_class = {
             OpenAIConfig: OpenAIAgent,
             AskSageConfig: AskSageAgent,
             ArgoConfig: ArgoAgent,
-        }[type(self.llm_config)]
-        
+        }[type(llm_config)]
         if agent_class is None:
             raise RuntimeError(
                 f"Dependencies required for {agent_class.__name__} is unavailable."
             )
-        self.agent = agent_class(
-            llm_config=self.llm_config,
+        agent = agent_class(
+            llm_config=llm_config,
+            name=name,
             system_message=self.assistant_system_message,
             memory_config=self.memory_config,
             memory_vector_store=self._memory_vector_store,
@@ -166,7 +225,8 @@ class BaseTaskManager:
             memory_formatter=self._memory_formatter,
             memory_embedder=self._memory_embedder,
         )
-        self.agent.set_tool_approval_handler(self._request_tool_approval_via_task_manager)
+        agent.set_tool_approval_handler(self._request_tool_approval_via_task_manager)
+        return agent
     
     def build_tools(self, *args, **kwargs):
         if self.agent is not None:
@@ -209,8 +269,9 @@ class BaseTaskManager:
         return [SkillTool(skill) for skill in skills]
 
     def register_tools(
-        self, 
-        tools: BaseTool | list[BaseTool], 
+        self,
+        tools: BaseTool | list[BaseTool],
+        agent: Optional[BaseAgent] = None,
     ) -> None:
         if not isinstance(tools, (list, tuple)):
             tools = [tools]
@@ -227,7 +288,9 @@ class BaseTaskManager:
                 raise ValueError(
                     "A subclass of BaseTool that is not MCPTool must provide at least one ExposedToolSpec in `exposed_tools`."
                 )
-        self.agent.register_tools(list(tools))
+        target_agents = [agent] if agent is not None else list(self.agent_group)
+        for target in target_agents:
+            target.register_tools(list(tools))
 
     def prerun_check(self, *args, **kwargs) -> bool:
         return True

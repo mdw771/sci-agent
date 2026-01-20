@@ -45,6 +45,7 @@ class ArgoAgent(OpenAIAgent):
     def __init__(
         self,
         llm_config: OpenAIConfig,
+        name: str = "assistant",
         system_message: str = None,
         memory_config: Optional[MemoryManagerConfig] = None,
         *,
@@ -72,6 +73,7 @@ class ArgoAgent(OpenAIAgent):
         """
         super().__init__(
             llm_config=llm_config,
+            name=name,
             system_message=system_message,
             memory_config=memory_config,
             memory_vector_store=memory_vector_store,
@@ -135,4 +137,3 @@ class ArgoAgent(OpenAIAgent):
         if "tool_calls" in response["response"] and len(response["response"]["tool_calls"]) > 0:
             oai_response["tool_calls"] = response["response"]["tool_calls"]
         return oai_response
-
