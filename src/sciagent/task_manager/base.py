@@ -874,7 +874,7 @@ class BaseTaskManager:
         self.update_message_history(response, update_context=True, update_full_history=True)
         while round < max_rounds:
             try:
-                if response["content"] is not None:
+                if "content" in response and response["content"] is not None:
                     if "TERMINATE" in response["content"] and termination_behavior == "return":
                         return
                     if (
