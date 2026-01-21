@@ -112,6 +112,10 @@ def has_tool_call(message: dict | ChatCompletionMessage) -> bool:
     """
     message = to_dict(message)
     if "tool_calls" in message.keys():
+        if message["tool_calls"] is None:
+            return False
+        if isinstance(message["tool_calls"], list) and len(message["tool_calls"]) == 0:
+            return False
         return True
     else:
         return False
@@ -166,7 +170,7 @@ def get_message_elements_as_text(message: Dict[str, Any]) -> Dict[str, Any]:
 
     image = None
     content = ""
-    if "content" in message.keys():
+    if "content" in message.keys() and message["content"] is not None:
         if isinstance(message["content"], str):
             content += message["content"] + "\n"
         elif isinstance(message["content"], list):
@@ -178,7 +182,7 @@ def get_message_elements_as_text(message: Dict[str, Any]) -> Dict[str, Any]:
                     image = item["image_url"]["url"]
 
     tool_calls = None
-    if "tool_calls" in message.keys():
+    if "tool_calls" in message.keys() and message["tool_calls"] is not None:
         tool_calls = ""
         for tool_call in message["tool_calls"]:
             tool_calls += f"{tool_call['id']}: {tool_call['function']['name']}\n"
