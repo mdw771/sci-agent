@@ -968,7 +968,7 @@ class BaseTaskManager:
                     self.update_message_history(outgoing, update_context=True, update_full_history=True)
                     self.update_message_history(response, update_context=True, update_full_history=True)
                 else:
-                    if "NEED HUMAN" not in response["content"]:
+                    if "content" in response and response["content"] is not None and "NEED HUMAN" not in response["content"]:
                         response, outgoing = self.agent.receive(
                             "There is no tool call in the response. Make sure you call the tool correctly. "
                             "If you need human intervention, say \"NEED HUMAN\".",
