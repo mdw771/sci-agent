@@ -693,6 +693,9 @@ class BaseAgent:
             )
         if message is None and context is None:
             raise ValueError("`message` and `context` cannot be None at the same time.")
+        
+        if isinstance(context, Sequence):
+            context = None if len(context) == 0 else context
             
         # Extract image path from string message, if any.
         if image_path is None and isinstance(message, str):
@@ -741,7 +744,7 @@ class BaseAgent:
                     if i == max_retries - 1:
                         response = generate_openai_message(
                             content="Failed to send message and get response after multiple retries. " + str(e),
-                            role="assistant"
+                            role="system"
                         )
                         print_message(response)
 
