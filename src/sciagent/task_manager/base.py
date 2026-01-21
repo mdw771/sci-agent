@@ -64,6 +64,7 @@ class BaseTaskManager:
         message_db_path: Optional[str] = None,
         use_webui: bool = False,
         use_coding_tools: bool = True,
+        run_codes_in_sandbox: bool = False,
         build: bool = True,
         *args,
         memory_vector_store: Optional[VectorStore] = None,
@@ -95,6 +96,8 @@ class BaseTaskManager:
             the message database. This requires `message_db_path`.
         use_coding_tools : bool
             If True, register default Python and Bash coding tools.
+        run_codes_in_sandbox : bool
+            If True, execute default coding tools in a container sandbox.
         build : bool
             Whether to build the internal state of the task manager.
         """
@@ -114,6 +117,7 @@ class BaseTaskManager:
 
         self.use_webui = use_webui
         self.use_coding_tools = use_coding_tools
+        self.run_codes_in_sandbox = run_codes_in_sandbox
         self.message_db_path = message_db_path
         self.message_db_conn = None
         self.webui_user_input_last_timestamp = 0
@@ -264,7 +268,10 @@ class BaseTaskManager:
     def _build_default_tools(self) -> list[BaseTool]:
         if not self.use_coding_tools:
             return []
-        return [PythonCodingTool(), BashCodingTool()]
+        return [
+            PythonCodingTool(run_in_sandbox=self.run_codes_in_sandbox),
+            BashCodingTool(run_in_sandbox=self.run_codes_in_sandbox),
+        ]
 
     def _build_skill_tools(self) -> list[BaseTool]:
         if not self.skill_dirs:
