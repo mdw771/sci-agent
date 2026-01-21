@@ -4,6 +4,7 @@ import logging
 
 from openai.types.chat import ChatCompletionMessage
 import numpy as np
+from PIL import Image
 
 from sciagent.util import encode_image_base64
 
@@ -37,7 +38,7 @@ def generate_openai_message(
     content: str,
     role: Literal["user", "system", "tool"] = "user",
     tool_call_id: str = None,
-    image: np.ndarray = None,
+    image: np.ndarray | Image.Image = None,
     image_path: str = None,
     encoded_image: str = None
 ) -> Dict[str, Any]:
@@ -50,7 +51,7 @@ def generate_openai_message(
         The content of the message.
     role : Literal["user", "system", "tool"], optional
         The role of the sender.
-    image : np.ndarray, optional
+    image : np.ndarray | Image.Image, optional
         The image to be sent to the agent. Exclusive with `encoded_image` and `image_path`.
     image_path : str, optional
         The path to the image to be sent to the agent. Exclusive with `image` and `encoded_image`.

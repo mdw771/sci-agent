@@ -46,8 +46,8 @@ def numpy_to_base64_image(arr: np.ndarray, format: str = "PNG") -> str:
 
 
 def encode_image_base64(
-    image: np.ndarray = None, 
-    image_path: str = None
+    image: np.ndarray | Image.Image | None = None, 
+    image_path: str | None = None
 ) -> str:
     """Encode an image to a base64 string.
     
@@ -69,7 +69,12 @@ def encode_image_base64(
         with open(image_path, "rb") as f:
             base64_data = base64.b64encode(f.read()).decode("utf-8")
     elif image is not None:
-        base64_data = numpy_to_base64_image(image)
+        if isinstance(image, np.ndarray):
+            base64_data = numpy_to_base64_image(image)
+        elif isinstance(image, Image.Image):
+            base64_data = numpy_to_base64_image(np.array(image))
+        else:
+            raise ValueError("Invalid image type. Must be a NumPy array or PIL image.")
     else:
         raise ValueError("Either `image` or `image_path` should be provided.")
 
