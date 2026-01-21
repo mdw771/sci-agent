@@ -63,6 +63,7 @@ class BaseTaskManager:
         skill_dirs: Optional[Sequence[str]] = None,
         message_db_path: Optional[str] = None,
         use_webui: bool = False,
+        use_coding_tools: bool = True,
         build: bool = True,
         *args,
         memory_vector_store: Optional[VectorStore] = None,
@@ -92,6 +93,8 @@ class BaseTaskManager:
         use_webui : bool
             If True, user input will be received from the WebUI via
             the message database. This requires `message_db_path`.
+        use_coding_tools : bool
+            If True, register default Python and Bash coding tools.
         build : bool
             Whether to build the internal state of the task manager.
         """
@@ -110,6 +113,7 @@ class BaseTaskManager:
             raise ValueError("`use_webui` requires `message_db_path` to be set.")
 
         self.use_webui = use_webui
+        self.use_coding_tools = use_coding_tools
         self.message_db_path = message_db_path
         self.message_db_conn = None
         self.webui_user_input_last_timestamp = 0
@@ -258,6 +262,8 @@ class BaseTaskManager:
         return names
 
     def _build_default_tools(self) -> list[BaseTool]:
+        if not self.use_coding_tools:
+            return []
         return [PythonCodingTool(), BashCodingTool()]
 
     def _build_skill_tools(self) -> list[BaseTool]:
