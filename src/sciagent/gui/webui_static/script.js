@@ -8,6 +8,7 @@
   const attachBtn = document.getElementById("attachBtn");
   const statusEl = document.getElementById("status");
   const inputRow = document.getElementById("inputRow");
+  const processingStatusEl = document.getElementById("processingStatus");
   const imageModal = document.getElementById("imageModal");
   const imageModalImg = document.getElementById("imageModalImg");
   const imageModalClose = document.getElementById("imageModalClose");
@@ -394,6 +395,23 @@
     return data.messages || [];
   }
 
+  async function fetchStatus() {
+    const res = await fetch("/api/status");
+    if (!res.ok) {
+      throw new Error(`Failed to fetch status (${res.status})`);
+    }
+    return res.json();
+  }
+
+  function updateProcessingStatus(userInputRequested) {
+    if (!processingStatusEl) return;
+    if (userInputRequested) {
+      processingStatusEl.hidden = true;
+      return;
+    }
+    processingStatusEl.hidden = false;
+  }
+
   function renderMessages(newMessages) {
     if (!newMessages.length) return;
     
@@ -418,6 +436,10 @@
         const messages = await fetchMessages();
         if (messages.length > 0) {
           renderMessages(messages);
+        }
+        const status = await fetchStatus();
+        if (typeof status.user_input_requested === "boolean") {
+          updateProcessingStatus(status.user_input_requested);
         }
         statusEl.textContent = "Connected";
       } catch (e) {

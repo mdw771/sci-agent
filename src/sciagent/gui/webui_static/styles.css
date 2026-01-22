@@ -118,6 +118,16 @@ body {
   flex-wrap: wrap;
 }
 
+.processing-status {
+  margin: 0 16px 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--accent);
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 .message .role-tag {
   font-weight: 600;
   padding: 2px 8px;

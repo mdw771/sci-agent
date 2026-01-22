@@ -155,11 +155,19 @@ class BaseTaskManager:
             self.message_db_conn.execute(
                 "CREATE TABLE IF NOT EXISTS messages (timestamp TEXT, role TEXT, content TEXT, tool_calls TEXT, image TEXT)"
             )
+            self.message_db_conn.execute(
+                "CREATE TABLE IF NOT EXISTS status (id INTEGER PRIMARY KEY, user_input_requested INTEGER)"
+            )
+            cursor = self.message_db_conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM status")
+            if cursor.fetchone()[0] == 0:
+                cursor.execute(
+                    "INSERT INTO status (id, user_input_requested) VALUES (1, 0)"
+                )
             self.message_db_conn.commit()
             
             # Set timestamp buffer to the timestamp of the last user input in the database
             # if it exists..
-            cursor = self.message_db_conn.cursor()
             if self.use_webui:
                 cursor.execute(
                     "SELECT timestamp, role, content, tool_calls, image FROM messages "
@@ -378,6 +386,7 @@ class BaseTaskManager:
             if not self.message_db_conn:
                 raise RuntimeError("WebUI input requires an active message database connection.")
             logger.info("Getting user input from relay database. Please enter your message in the WebUI.")
+            self.set_user_input_requested(True)
             cursor = self.message_db_conn.cursor()
             if display_prompt_in_webui:
                 self.add_message_to_db({"role": "system", "content": prompt})
@@ -386,10 +395,13 @@ class BaseTaskManager:
                 messages = cursor.fetchall()
                 if len(messages) > 0 and int(messages[-1][0]) > self.webui_user_input_last_timestamp:
                     self.webui_user_input_last_timestamp = int(messages[-1][0])
+                    self.set_user_input_requested(False)
                     return messages[-1][2]
                 time.sleep(1)
         else:
+            self.set_user_input_requested(True)
             message = input(prompt)
+            self.set_user_input_requested(False)
             return message
         
     def _sync_webui_user_input_last_timestamp(self) -> None:
@@ -401,6 +413,15 @@ class BaseTaskManager:
             messages = cursor.fetchall()
             if len(messages) > 0:
                 self.webui_user_input_last_timestamp = int(messages[-1][0])
+
+    def set_user_input_requested(self, requested: bool) -> None:
+        if not self.message_db_conn:
+            return
+        self.message_db_conn.execute(
+            "UPDATE status SET user_input_requested = ? WHERE id = 1",
+            (1 if requested else 0,),
+        )
+        self.message_db_conn.commit()
 
     def _request_tool_approval_via_task_manager(self, tool_name: str, tool_kwargs: Dict[str, Any]) -> bool:
         """Relay approval requests through the task manager input channels."""

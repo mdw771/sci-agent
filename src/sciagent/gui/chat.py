@@ -57,9 +57,23 @@ def _open_db_connection() -> sqlite3.Connection:
     return conn
 
 
+def _ensure_status_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS status (id INTEGER PRIMARY KEY, user_input_requested INTEGER)"
+    )
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM status")
+    if cursor.fetchone()[0] == 0:
+        cursor.execute(
+            "INSERT INTO status (id, user_input_requested) VALUES (1, 0)"
+        )
+    conn.commit()
+
+
 def _query_messages(since_id: int | None = None) -> list[tuple[Any, ...]]:
     conn = _open_db_connection()
     try:
+        _ensure_status_table(conn)
         cursor = conn.cursor()
         if since_id is None:
             cursor.execute(
@@ -72,6 +86,20 @@ def _query_messages(since_id: int | None = None) -> list[tuple[Any, ...]]:
             )
         rows = cursor.fetchall()
         return rows
+    finally:
+        conn.close()
+
+
+def _query_status() -> bool:
+    conn = _open_db_connection()
+    try:
+        _ensure_status_table(conn)
+        cursor = conn.cursor()
+        cursor.execute("SELECT user_input_requested FROM status WHERE id = 1")
+        row = cursor.fetchone()
+        if not row:
+            return False
+        return bool(row[0])
     finally:
         conn.close()
 
@@ -146,6 +174,13 @@ def get_app(static_dir: str | None = None) -> FastAPI:
                     }
                 )
             return JSONResponse({"messages": data})
+        except Exception as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+
+    @app.get("/api/status")
+    def api_get_status():
+        try:
+            return JSONResponse({"user_input_requested": _query_status()})
         except Exception as e:
             return JSONResponse({"error": str(e)}, status_code=500)
 
