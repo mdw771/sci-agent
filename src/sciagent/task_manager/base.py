@@ -62,6 +62,7 @@ class BaseTaskManager:
         tools: list[BaseTool] = (), 
         skill_dirs: Optional[Sequence[str]] = None,
         message_db_path: Optional[str] = None,
+        fill_context_with_message_db: bool = False,
         use_webui: bool = False,
         use_coding_tools: bool = True,
         run_codes_in_sandbox: bool = False,
@@ -91,6 +92,9 @@ class BaseTaskManager:
         message_db_path : Optional[str]
             If provided, the entire chat history will be stored in 
             a SQLite database at the given path.
+        fill_context_with_message_db : bool
+            If True and `message_db_path` is provided, load the message database
+            and populate the task manager context after the system message.
         use_webui : bool
             If True, user input will be received from the WebUI via
             the message database. This requires `message_db_path`.
@@ -119,6 +123,7 @@ class BaseTaskManager:
         self.use_coding_tools = use_coding_tools
         self.run_codes_in_sandbox = run_codes_in_sandbox
         self.message_db_path = message_db_path
+        self.fill_context_with_message_db = fill_context_with_message_db
         self.message_db_conn = None
         self.webui_user_input_last_timestamp = 0
 
@@ -176,6 +181,100 @@ class BaseTaskManager:
                 messages = cursor.fetchall()
                 if len(messages) > 0 and self.webui_user_input_last_timestamp == 0:
                     self.webui_user_input_last_timestamp = int(messages[-1][0])
+            if self.fill_context_with_message_db:
+                self._fill_context_from_message_db()
+
+    def _fill_context_from_message_db(self) -> None:
+        if not self.message_db_conn:
+            return
+        cursor = self.message_db_conn.cursor()
+        cursor.execute(
+            "SELECT rowid, timestamp, role, content, tool_calls, image FROM messages ORDER BY rowid"
+        )
+        rows = cursor.fetchall()
+        if not rows:
+            return
+
+        pending_tool_call_ids: list[str] = []
+        messages: list[dict[str, Any]] = []
+        for _, _, role, content, tool_calls, image in rows:
+            normalized_role = "user" if role == "user_webui" else role
+            content_text = (content or "").strip()
+            if content_text:
+                content_text = "\n".join(
+                    line for line in content_text.splitlines() if line.strip() != "<image>"
+                ).strip()
+
+            message: dict[str, Any] = {"role": normalized_role, "content": content_text}
+
+            if image:
+                image_url = image
+                if isinstance(image_url, bytes):
+                    image_url = image_url.decode("utf-8", errors="ignore")
+                if not image_url.startswith("data:image"):
+                    image_url = f"data:image/png;base64,{image_url}"
+                message["content"] = [
+                    {"type": "text", "text": content_text},
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                ]
+
+            tool_call_list = self._parse_tool_calls_text(tool_calls)
+            if tool_call_list:
+                message["tool_calls"] = tool_call_list
+                pending_tool_call_ids.extend(
+                    [tool_call["id"] for tool_call in tool_call_list if "id" in tool_call]
+                )
+            elif normalized_role == "tool" and pending_tool_call_ids:
+                message["tool_call_id"] = pending_tool_call_ids.pop(0)
+
+            messages.append(message)
+
+        insert_index = 0
+        while (
+            insert_index < len(self.context)
+            and self.context[insert_index].get("role") == "system"
+        ):
+            insert_index += 1
+        for offset, message in enumerate(messages):
+            self.context.insert(insert_index + offset, message)
+
+        history_insert_index = 0
+        while (
+            history_insert_index < len(self.full_history)
+            and self.full_history[history_insert_index].get("role") == "system"
+        ):
+            history_insert_index += 1
+        for offset, message in enumerate(messages):
+            self.full_history.insert(history_insert_index + offset, message)
+
+    def _parse_tool_calls_text(self, tool_calls: Optional[str]) -> list[dict[str, Any]]:
+        if not tool_calls:
+            return []
+        lines = [line.strip() for line in tool_calls.splitlines() if line.strip()]
+        calls: list[dict[str, Any]] = []
+        i = 0
+        while i < len(lines):
+            header = lines[i]
+            if ":" not in header:
+                i += 1
+                continue
+            tool_id, tool_name = header.split(":", 1)
+            tool_id = tool_id.strip()
+            tool_name = tool_name.strip()
+            arguments = ""
+            if i + 1 < len(lines) and lines[i + 1].startswith("Arguments:"):
+                arguments = lines[i + 1].split("Arguments:", 1)[1].strip()
+                i += 2
+            else:
+                i += 1
+            calls.append(
+                {
+                    "id": tool_id,
+                    "type": "function",
+                    "function": {"name": tool_name, "arguments": arguments},
+                }
+            )
+        return calls
     
     def build_agent(self, *args, **kwargs):
         """Build the assistant(s)."""
