@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Sequence, Tuple
 from sciagent.tool.base import BaseTool, ToolReturnType, tool
 
 logger = logging.getLogger(__name__)
+MARKDOWN_IMAGE_PATTERN = re.compile(r"!\[[^\]]*]\(([^)]+)\)")
 
 
 @dataclass(frozen=True)
@@ -38,7 +39,7 @@ class SkillTool(BaseTool):
     @tool(name="fetch_skill_docs", return_type=ToolReturnType.DICT)
     def fetch_skill_docs(self) -> Dict[str, Any]:
         """Returns the documentation files for this skill."""
-        files, skipped = collect_skill_docs(
+        files, skipped, images_by_file = collect_skill_docs(
             Path(self.metadata.path), max_doc_bytes=self.max_doc_bytes
         )
         return {
@@ -46,6 +47,7 @@ class SkillTool(BaseTool):
             "description": self.metadata.description,
             "path": self.metadata.path,
             "files": files,
+            "images_by_file": images_by_file,
             "skipped_files": skipped,
         }
 
@@ -204,9 +206,10 @@ def collect_skill_docs(
     skill_dir: Path,
     *,
     max_doc_bytes: int = 200_000,
-) -> Tuple[Dict[str, str], List[str]]:
+) -> Tuple[Dict[str, str], List[str], Dict[str, List[str]]]:
     files: Dict[str, str] = {}
     skipped: List[str] = []
+    images_by_file: Dict[str, List[str]] = {}
 
     doc_paths: list[Path] = []
     for path in skill_dir.rglob("*"):
@@ -247,5 +250,46 @@ def collect_skill_docs(
             continue
 
         files[relative_path] = content
+        images_by_file[relative_path] = extract_markdown_image_paths(
+            content,
+            markdown_path=path,
+        )
 
-    return files, skipped
+    return files, skipped, images_by_file
+
+
+def extract_markdown_image_paths(
+    markdown_content: str,
+    *,
+    markdown_path: Path | None = None,
+) -> List[str]:
+    """Extract image paths from markdown image tags.
+
+    Paths in the form of `![alt](path)` are supported. When `markdown_path`
+    is provided, relative paths are resolved against the markdown file parent.
+    Remote URLs are ignored.
+    """
+    image_paths: List[str] = []
+    for match in MARKDOWN_IMAGE_PATTERN.finditer(markdown_content):
+        raw_target = match.group(1).strip()
+        if not raw_target:
+            continue
+
+        # Allow markdown links that wrap the path in angle brackets.
+        if raw_target.startswith("<") and raw_target.endswith(">"):
+            raw_target = raw_target[1:-1].strip()
+
+        # Handle optional markdown title: ![alt](path "title")
+        if " " in raw_target:
+            raw_target = raw_target.split(" ", 1)[0].strip()
+
+        if "://" in raw_target:
+            continue
+
+        resolved_path = raw_target
+        if markdown_path is not None and not Path(raw_target).is_absolute():
+            resolved_path = str((markdown_path.parent / raw_target).resolve())
+
+        image_paths.append(resolved_path)
+
+    return image_paths

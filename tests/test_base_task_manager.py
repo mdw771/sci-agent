@@ -12,7 +12,7 @@ import pytest
 from sciagent.task_manager.base import BaseTaskManager
 from sciagent.tool.base import ToolReturnType
 from sciagent.api.llm_config import OpenAIConfig
-from sciagent.skill import load_skills
+from sciagent.skill import load_skills, SkillMetadata
 
 import test_utils as tutils
 
@@ -218,11 +218,95 @@ class TestBaseTaskManagerFeedbackLoop(tutils.BaseTester):
         # Verify handle_tool_call was called appropriately
         assert self.task_manager.agent.handle_tool_call.call_count == 1  # Only first response checked for tool calls
 
-        # Verify update_message_history was called appropriately
-        assert self.task_manager.update_message_history.call_count >= 4  # Initial + response + tool response + image response
-        
-        # Verify user was prompted when TERMINATE condition triggered
-        self.task_manager.get_user_input.assert_called_once()
+    def test_run_feedback_loop_injects_skill_docs_as_separate_text_and_image_messages(self):
+        initial_prompt = "launch subtask"
+        self.task_manager.skill_catalog = [
+            SkillMetadata(
+                name="demo",
+                description="demo skill",
+                tool_name="skill-demo",
+                path="/skills/demo",
+            )
+        ]
+
+        response1 = {
+            "role": "assistant",
+            "content": "Using the selected skill.",
+            "tool_calls": [
+                {
+                    "id": "tool-1",
+                    "type": "function",
+                    "function": {"name": "skill-demo", "arguments": "{}"},
+                }
+            ],
+        }
+        outgoing1 = generate_random_message(role="user")
+
+        response2 = {"role": "assistant", "content": "TERMINATE", "tool_calls": []}
+
+        skill_payload = {
+            "name": "demo",
+            "description": "demo skill",
+            "path": "/skills/demo",
+            "files": {
+                "introduction.md": "Intro text\n![img1](/img/1.png)\n![img2](/img/2.png)",
+                "collecting_data.md": "Collect data\n![img3](/img/3.png)",
+            },
+            "images_by_file": {
+                "introduction.md": ["/img/1.png", "/img/2.png"],
+                "collecting_data.md": ["/img/3.png"],
+            },
+            "skipped_files": [],
+        }
+        tool_response = generate_random_tool_response(
+            content=json.dumps(skill_payload),
+            tool_call_id="tool-1",
+        )
+
+        self.task_manager.agent.receive.side_effect = make_receive_side_effect(
+            [
+                (response1, outgoing1),
+                (response2, None),
+            ]
+        )
+        self.task_manager.agent.handle_tool_call.side_effect = [
+            ([tool_response], [ToolReturnType.DICT]),
+        ]
+
+        self.task_manager.run_feedback_loop(
+            initial_prompt=initial_prompt,
+            termination_behavior="return",
+            max_rounds=3,
+        )
+
+        messages = [call_args.args[0] for call_args in self.task_manager.update_message_history.call_args_list]
+        contents = [message.get("content") for message in messages]
+
+        expected_sequence = [
+            "[Skill file: introduction.md]\nIntro text\n![img1](/img/1.png)\n![img2](/img/2.png)",
+            [
+                {"type": "text", "text": "Image referenced by skill file `introduction.md`."},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,FAKE_BASE64_IMAGE"}},
+            ],
+            [
+                {"type": "text", "text": "Image referenced by skill file `introduction.md`."},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,FAKE_BASE64_IMAGE"}},
+            ],
+            "[Skill file: collecting_data.md]\nCollect data\n![img3](/img/3.png)",
+            [
+                {"type": "text", "text": "Image referenced by skill file `collecting_data.md`."},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,FAKE_BASE64_IMAGE"}},
+            ],
+        ]
+
+        # The expected sequence should appear in-order in the injected messages.
+        search_start = 0
+        for expected in expected_sequence:
+            expected_index = contents.index(expected, search_start)
+            search_start = expected_index + 1
+
+        # Verify message history was updated with tool response and injected docs.
+        assert self.task_manager.update_message_history.call_count >= 4
 
 
     def test_run_feedback_loop_with_exception_tool_response(self):

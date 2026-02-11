@@ -3,6 +3,7 @@ import json
 import sqlite3
 import logging
 import time
+from pathlib import Path
 
 from sciagent.message_proc import print_message
 from sciagent.api.memory import MemoryManagerConfig
@@ -10,6 +11,7 @@ from sciagent.message_proc import (
     generate_openai_message, 
     get_message_elements_as_text, 
     has_tool_call,
+    get_tool_call_info,
     purge_context_images,
     complete_unresponded_tool_calls
 )
@@ -21,7 +23,7 @@ from sciagent.agent.base import BaseAgent
 from sciagent.util import get_timestamp
 from sciagent.tool.base import ToolReturnType
 from sciagent.tool.coding import PythonCodingTool, BashCodingTool
-from sciagent.skill import SkillTool, load_skills
+from sciagent.skill import SkillTool, load_skills, extract_markdown_image_paths
 from sciagent.api.llm_config import LLMConfig, OpenAIConfig, AskSageConfig, ArgoConfig
 from sciagent.agent.memory import MemoryQueryResult, VectorStore
 from sciagent.exceptions import MaxRoundsReached
@@ -388,6 +390,105 @@ class BaseTaskManager:
         self.skill_catalog = skills
         return [SkillTool(skill) for skill in skills]
 
+    def _parse_tool_response_payload(self, content: Any) -> Optional[Dict[str, Any]]:
+        if isinstance(content, dict):
+            return content
+        if not isinstance(content, str):
+            return None
+
+        try:
+            parsed: Any = json.loads(content)
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+
+    def _build_skill_doc_messages(
+        self,
+        tool_response: Dict[str, Any],
+        tool_call_info: Optional[Dict[str, Any]],
+    ) -> list[Dict[str, Any]]:
+        if tool_call_info is None:
+            return []
+
+        function_info = tool_call_info.get("function", {})
+        tool_name = function_info.get("name")
+        skill_tool_names = {skill.tool_name for skill in self.skill_catalog}
+        if tool_name not in skill_tool_names:
+            return []
+
+        payload = self._parse_tool_response_payload(tool_response.get("content"))
+        if payload is None:
+            return []
+
+        files = payload.get("files")
+        if not isinstance(files, dict):
+            return []
+
+        skill_root = payload.get("path")
+        skill_root_path = Path(skill_root) if isinstance(skill_root, str) else None
+        images_by_file_raw = payload.get("images_by_file")
+        images_by_file = images_by_file_raw if isinstance(images_by_file_raw, dict) else {}
+
+        messages: list[Dict[str, Any]] = []
+        for relative_path, file_content in files.items():
+            if not isinstance(relative_path, str) or not isinstance(file_content, str):
+                continue
+
+            text_message = generate_openai_message(
+                content=f"[Skill file: {relative_path}]\n{file_content}",
+                role="user",
+            )
+            messages.append(text_message)
+
+            image_paths = images_by_file.get(relative_path, [])
+            parsed_image_paths: list[str] = []
+            if isinstance(image_paths, list):
+                parsed_image_paths = [path for path in image_paths if isinstance(path, str)]
+
+            if not parsed_image_paths:
+                markdown_path = None
+                if skill_root_path is not None:
+                    markdown_path = skill_root_path / relative_path
+                parsed_image_paths = extract_markdown_image_paths(
+                    file_content,
+                    markdown_path=markdown_path,
+                )
+
+            for image_path in parsed_image_paths:
+                try:
+                    image_message = generate_openai_message(
+                        content=f"Image referenced by skill file `{relative_path}`.",
+                        role="user",
+                        image_path=image_path,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to load image '%s' referenced by skill file '%s': %s",
+                        image_path,
+                        relative_path,
+                        exc,
+                    )
+                    image_message = generate_openai_message(
+                        content=f"Image path from skill file `{relative_path}`: {image_path}",
+                        role="user",
+                    )
+                messages.append(image_message)
+
+        return messages
+
+    def _inject_skill_doc_messages_to_context(
+        self,
+        tool_response: Dict[str, Any],
+        tool_call_info: Optional[Dict[str, Any]],
+    ) -> None:
+        skill_doc_messages = self._build_skill_doc_messages(tool_response, tool_call_info)
+        for skill_doc_message in skill_doc_messages:
+            self.update_message_history(
+                skill_doc_message,
+                update_context=True,
+                update_full_history=True,
+            )
+
     def register_tools(
         self,
         tools: BaseTool | list[BaseTool],
@@ -721,12 +822,17 @@ class BaseTaskManager:
                 
                 # Handle tool calls
                 tool_responses, tool_response_types = self.agent.handle_tool_call(response, return_tool_return_types=True)
+                tool_call_info_list = get_tool_call_info(response, index=None) if has_tool_call(response) else []
                 for tool_response, tool_response_type in zip(tool_responses, tool_response_types):
                     print_message(tool_response)
                     self.update_message_history(tool_response, update_context=True, update_full_history=True)
                 
                 if len(tool_responses) >= 1:
-                    for tool_response, tool_response_type in zip(tool_responses, tool_response_types):
+                    for index, (tool_response, tool_response_type) in enumerate(zip(tool_responses, tool_response_types)):
+                        tool_call_info = tool_call_info_list[index] if index < len(tool_call_info_list) else None
+
+                        self._inject_skill_doc_messages_to_context(tool_response, tool_call_info)
+
                         # If the tool returns an image path, load the image and send it to 
                         # the assistant in a follow-up message as user.
                         if tool_response_type == ToolReturnType.IMAGE_PATH:
@@ -1040,6 +1146,7 @@ class BaseTaskManager:
                             continue
                 
                 tool_responses, tool_response_types = self.agent.handle_tool_call(response, return_tool_return_types=True)
+                tool_call_info_list = get_tool_call_info(response, index=None) if has_tool_call(response) else []
                 
                 # Add tool response to context regardless whether multiple tool calls are allowed or not, 
                 # because otherwise it would throw an error.
@@ -1048,7 +1155,11 @@ class BaseTaskManager:
                     self.update_message_history(tool_response, update_context=True, update_full_history=True)
                 
                 if len(tool_responses) == 1 or allow_multiple_tool_calls:
-                    for tool_response, tool_response_type in zip(tool_responses, tool_response_types):
+                    for index, (tool_response, tool_response_type) in enumerate(zip(tool_responses, tool_response_types)):
+                        tool_call_info = tool_call_info_list[index] if index < len(tool_call_info_list) else None
+
+                        self._inject_skill_doc_messages_to_context(tool_response, tool_call_info)
+
                         if tool_response_type == ToolReturnType.IMAGE_PATH:
                             # If the tool returns an image path, load and encode the image,
                             # then compose a follow-up message with the image and add it to

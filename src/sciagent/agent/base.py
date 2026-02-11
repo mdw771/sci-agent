@@ -917,9 +917,14 @@ class BaseAgent:
             except Exception as e:
                 exception_encountered = True
                 result = str(e)
+
+            if isinstance(result, dict):
+                content = json.dumps(result)
+            else:
+                content = str(result)
             
             response = generate_openai_message(
-                content=str(result),
+                content=content,
                 role="tool",
                 tool_call_id=tool_call_id
             )
