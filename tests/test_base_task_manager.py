@@ -676,6 +676,15 @@ class TestBaseTaskManagerFeedbackLoop(tutils.BaseTester):
         )
 
 
+    def test_run_conversation_skill_command_displays_skills(self):
+        self.task_manager.get_user_input.side_effect = ["/skill", "/exit"]
+        self.task_manager.display_available_skills = MagicMock()
+
+        self.task_manager.run_conversation()
+
+        self.task_manager.display_available_skills.assert_called_once()
+        self.task_manager.agent.receive.assert_not_called()
+
 class TestBaseTaskManagerLaunchSubtask(tutils.BaseTester):
 
     def setup_method(

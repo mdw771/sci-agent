@@ -659,8 +659,29 @@ class BaseTaskManager:
             "every 60 seconds`\n"
             "* `/subtask <task description>`: run a skill-driven subtask using the configured "
             "skill tools and coding tools.\n"
+            "* `/skill`: display skills available to the agent.\n"
             "* `/return`: return to upper level task\n"
         )
+        if self.use_webui:
+            if self.message_db_conn:
+                self.add_message_to_db({"role": "system", "content": s})
+        else:
+            print(s)
+            if self.message_db_conn:
+                self.add_message_to_db({"role": "system", "content": s})
+        return s
+
+    def display_available_skills(self) -> str:
+        if not self.skill_catalog:
+            s = "No skills are available."
+        else:
+            lines = ["Skills available to the agent:"]
+            for index, skill in enumerate(self.skill_catalog, start=1):
+                lines.append(
+                    f"{index}. {skill.name} ({skill.tool_name}) - {skill.description} [{skill.path}]"
+                )
+            s = "\n".join(lines)
+
         if self.use_webui:
             if self.message_db_conn:
                 self.add_message_to_db({"role": "system", "content": s})
@@ -780,7 +801,7 @@ class BaseTaskManager:
                     message = self.get_user_input(
                         prompt=(
                             "Enter a message (/exit: exit; /return: return to upper level task; "
-                            "/help: show command help): "
+                            "/help: show command help; /skill: list skills): "
                         )
                     )
                     stripped_message = message.strip()
@@ -799,6 +820,9 @@ class BaseTaskManager:
                         continue
                     elif command_lower == "/subtask":
                         self.launch_task_manager(remainder.strip())
+                        continue
+                    elif command_lower == "/skill" and remainder == "":
+                        self.display_available_skills()
                         continue
                     elif command_lower == "/help" and remainder == "":
                         self.display_command_help()
